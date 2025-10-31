@@ -1,4 +1,14 @@
 # StarVLA: A Lego-like Codebase for Vision-Language-Action Model Developing
+
+![Update](https://img.shields.io/badge/UPDATE-Scripts%20fixed%20%7C%20Packaging%20smoother-red?style=for-the-badge)
+
+**[2025/10/30]:** We released the LIBERO Training & Evaluation README. Results are very promising. More detail are in [examples/LIBERO](examples/LIBERO). 
+
+**[2025/10/25]:** We fixed several script links and so everything is smoother now. Thanks to the community for the feedback.
+
+
+---
+
 StarVLA is a modular and flexible codebase for developing Vision-Language Model (VLM) to Vision-Language-Action (VLA) models.
 In StarVLA (also a pun on “start VLA” ),  each functional component (model, data, trainer, config, evaluation, etc.) follows a top-down, intuitive separation and high cohesion and low coupling principle, which enabling plug-and-play design, rapid prototyping, and independent debugging.
 
@@ -24,9 +34,13 @@ In StarVLA (also a pun on “start VLA” ),  each functional component (model, 
 
 
 <p align="center">
-  <img src="assets/starVLA_tabel_v2.png" alt="SimplerEnv modules" width="85%">
+  <img src="assets/starvla_simpleEnv.png" alt="SimplerEnv modules" width="95%">
 </p>
-* Qwen-FAST and Qwen-OFT were trained on 16×A100 GPUs for 10k steps (~3 hours), while Qwen-FM and Qwen-Dual were trained for 30k steps (~18 hours). 
+
+<p align="center">
+  <img src="assets/starvla_LIBERO.png" alt="LIBERO modules" width="84%">
+</p>
+
 
 For dynamic updates, see our [🍀 Overleaf](https://www.overleaf.com/read/qqtwrnprctkf#d5bdce), which continuously presents our real-time experimental results.
 
@@ -45,7 +59,7 @@ We release a series of pretrained models and checkpoints to facilitate reproduct
 | **QWen2.5-FAST-Bridge-RT-1** | QwenVL + fast-tokenizer | 58.6 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-FAST-Bridge-RT-1) |
 | **QWen2.5-OFT-Bridge-RT-1** | QwenVL + OFT action regression | 41.8 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-OFT-Bridge-RT-1) |
 | **QWen2.5-PI-Bridge-RT-1** | QwenVL + flow-matching expert  | 62.5 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-FM-Bridge-RT-1) |
-| **QWen2.5-GR00T-Bridge-RT-1** | QwenVL + GR00T N1.5 action header | 63.6 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-GR00T-Bridge-RT-1) |
+| **QWen2.5-GR00T-Bridge-RT-1** | QwenVL + GR00T N1.5 action header | 63.6 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-PI-Bridge-RT-1) |
 | **QWen-GR00T-Bridge** | QwenVL + GR00T N1.5 action header | 71.4 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen-GR00T-Bridge) |
 | **QWen3VL-OFT-Bridge-RT-1** | Qwen3VL + OFT action regression | 42.7 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3VL-OFT-Bridge-RT-1) |
 | **QWen3VL-GR00T-Bridge-RT-1** | Qwen3VL + GR00T N1.5 action header | 65.3 | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3VL-GR00T-Bridge-RT-1) |
@@ -88,9 +102,9 @@ StarVLA emphasizes a modular model design. Each major framework file can be run 
 
 ```bash
 # model
-python starVLA/model/framework/QwenOFT.py --config_yaml internvla_cotrain_oxe.yaml
+python starVLA/model/framework/QwenOFT.py --config_yaml starvla_cotrain_oxe.yaml
 # dataloader
-python starVLA/dataloader/lerobot_datasets.py --config_yaml internvla_cotrain_oxe.yaml
+python starVLA/dataloader/lerobot_datasets.py --config_yaml starvla_cotrain_oxe.yaml
 
 ```
 Note: `starVLA/model/framework/yourframework.py` is the single external API surface of the model; it should mirror (be structurally isomorphic to) the framework diagram in your paper.
@@ -152,35 +166,68 @@ pip install flash-attn --no-build-isolation
 # Install starVLA
 pip install -e .
 ```
+
+
+⚠️ **Common Issues**
+flash-attn can be tricky to install because it must match your system’s CUDA toolkit (nvcc) and PyTorch versions. The `--no-build-isolation` flag resolves most issues, but on newer systems you may need to manually choose a compatible flash-attn version. Ensure your CUDA driver/toolkit and torch versions are aligned. Check your environment:
+
+```bash
+nvcc -V
+pip list | grep -E 'torch|transformers|flash-attn'
+```
+
+If issues persist, pick a flash-attn release that matches your versions (CUDA and torch) or ask chatGPT with searching function for help with the outputs above.
+
 </details>
 
 <details close>
 <summary><b>👀 Quick Check StarVLA
 </b></summary>
 
+
+
 ```bash
 # check framework with fake examples
-python starVLA/model/framework/QwenFM.py
+python starVLA/model/framework/QwenGR00T.py
 ```
 
 
-It should build successfully and `print(model)`. You can also call `model.forward(fake_data)` and obtain unnormalized actions via `model.predict_action(fake_data)`.
+You should download `./playground/Pretrained_models/Qwen3-VL-4B-Instruct`. It should build successfully and `print(model)`. You can also call `model.forward(fake_data)` and obtain unnormalized actions via `model.predict_action(fake_data)`.
+
 </details>
 
 <details close>
 <summary><b>🧪 Eval Existing Model
 </b></summary>
 
-The evaluation pipeline is adapted from [InternVLA-M1](https://github.com/InternRobotics/InternVLA-M1/examples/SimplerEnv)
-
 We also provide a parallel evaluation script:
 
   ```bash
-  check_pt=0723_v6_vla_dino_32/checkpoints/steps_10000_pytorch_model.pt
-  bash examples/SimplerEnv/eval_scripts/star_bridge.sh ${check_pt}
+  check_pt=StarVLA/Qwen3VL-GR00T-Bridge-RT-1/checkpoints/steps_20000_pytorch_model.pt
+  bash examples/SimplerEnv/star_bridge_parall_eval.sh ${check_pt}
   ```
 
-Before running, edit these variables directly at the top of `star_bridge.sh`.
+Before running, down [Qwen3VL-GR00T-Bridge-RT-1](https://huggingface.co/StarVLA/Qwen3VL-GR00T-Bridge-RT-1) and follow [SimpplerEnv](https://simpler-env.github.io/) prapare a python.  Edit these variables directly at the top of `star_bridge_parall_eval.sh`.
+
+If you don't want parallel testing, please run:
+
+```bash
+
+# Terminal 1
+bash ./examples/SimplerEnv/start_server.sh
+# Terminal 2
+bash ./examples/SimplerEnv/start_simpler_env.sh
+```
+---
+
+⚠️ **Common Issues**
+When testing SimplerEnv on NVIDIA A100, you may encounter the following error:
+`libvulkan.so.1: cannot open shared object file: No such file or directory`
+You can refer to this link to fix: [Installation Guide – Vulkan Section](https://maniskill.readthedocs.io/en/latest/user_guide/getting_started/installation.html#vulkan)
+
+When run policy server but `NotImplementedError:Framework QwenGR00T is not implemented`, you may need to `python QwenGR00T.py` to check your env.
+
+
 
 </details>
 
@@ -205,15 +252,15 @@ Steps:
 3) Run with Accelerate:
     ```bash
     base_vlm=Qwen/Qwen2.5-VL-3B-Instruct
-    Framework_name=QwenFM
+    Framework_name=QwenGR00T
     run_root_dir=./results
     run_id=${Framework_name}
 
     accelerate launch \
       --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
       --num_processes 8 \
-      starVLA/training/train_internvla.py \
-      --config_yaml ./starVLA/config/training/internvla_cotrain_oxe.yaml \
+      starVLA/training/train_starvla.py \
+      --config_yaml ./starVLA/config/training/starvla_contrain_oxe.yaml \
       --framework.framework_py ${Framework_name} \
       --framework.qwenvl.base_vlm ${base_vlm} \
       --run_root_dir ${run_root_dir} \
@@ -238,8 +285,15 @@ A: We profiled it: data preprocessing takes <1% time. Keeping it inside the Fram
 <details close>
 <summary><b>Q: Can I use a backbone other than Qwen2.5-VL?</b></summary>
 
-A: Yes. Implement new vision + language modules and compose them inside a Framework; any other existing models can be swapped in. yet, due to framework precessing raw action data, it is very easy to swapped in.
+A: Yes. Implement new vision + language modules and compose them inside a Framework; any other existing models can be swapped in. Yet, due to the framework processing raw action data, it is very easy to swap in.
 </details>
+
+<details close> <summary><b>Q: Why isn't there an abstract interface for the vision tower?</b></summary>
+  
+A: We believe that VLM will become the base model and will inherently possess its own native vision tower.
+
+</details>
+
 
 <details close>
 <summary><b>Q: Can I override or add parameters via the terminal?</b></summary>
@@ -252,7 +306,7 @@ accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml  \
   --num_processes 8 \
   starVLA/training/train_internvla.py \
-  --config_yaml ./starVLA/config/training/internvla_cotrain_oxe.yaml \
+  --config_yaml ./starVLA/config/training/starvla_cotrain_oxe.yaml \
   --framework.qwenvl.base_vlm Qwen/Qwen2.5-VL-7B-Instruct \ # override framework choice
   --framework.qwenvl.base_vlm Qwen/Qwen2.5-VL-7B-Instruct \ # override framework choice
   --framework.action_model.new_module ${module_name} \ # plug-in a new module to action model
@@ -334,6 +388,12 @@ Tip: Before submitting a PR, run make check locally to pass formatting and lint.
 
 
 ##  🙏 Acknowledgements
-References & inspiration: LeRobot, GR00T, DeepSpeed, QWEN.  
-Codebase originally forked from InternVLA-M1
+This project draws inspiration and references from several notable open-source initiatives, including:  
+- [LeRobot](https://github.com/huggingface/lerobot)  
+- [GR00T](https://github.com/NVIDIA/Isaac-GR00T/tree/main)  
+- [DeepSpeed](https://github.com/deepspeedai/DeepSpeed)  
+- [Qwen-VL](https://github.com/QwenLM/Qwen3-VL/tree/main)  
+- [InternVL](https://github.com/OpenGVLab/InternVL)  
+
+The codebase was originally forked from [InternVLA-M1](https://github.com/InternRobotics/InternVLA-M1).
 
