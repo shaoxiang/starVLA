@@ -23,7 +23,7 @@ kwargs = {
     "max_episode_steps": 120,
     "scene_name": "bridge_table_1_v2",
     "camera_cfgs": {"add_segmentation": True},
-    "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png"
+    "rgb_overlay_path": "/code/robot/benchmark/SimplerEnv/ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png"
 }
 
 additional_env_build_kwargs = {}

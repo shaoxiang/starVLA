@@ -30,7 +30,7 @@ class WebsocketClientPolicy:
     def get_server_metadata(self) -> Dict:
         return self._server_metadata
 
-    def _wait_for_server(self, timeout: float = 600) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
+    def _wait_for_server(self, timeout: float = 60) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
         logging.info(f"Waiting for server at {self._uri}...")
         start_time = time.time()
         

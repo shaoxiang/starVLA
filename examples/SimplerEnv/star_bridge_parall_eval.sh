@@ -1,11 +1,16 @@
 #!/bin/bash
 
+# check_pt=/data/models/starVLA/qwenoft/Checkpoints/1004_starvla_qwenoft_oxe/checkpoints/steps_20000_pytorch_model.pt
+# check_pt=/data/models/starVLA/Qwen3VL-GR00T-Bridge-RT-1/checkpoints/steps_20000_pytorch_model.pt
+# bash examples/SimplerEnv/star_bridge_parall_eval.sh ${check_pt}
+
 echo `which python`
 # Define environment
 cd .
-export star_vla_python=~/miniconda3/envs/starvla/bin/python
-export sim_python=~/miniconda3/envs/dinoact/bin/python
-export SimplerEnv_PATH=~/Projects/SimplerEnv
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export star_vla_python=/data/conda/starVLA/bin/python
+export sim_python=/data/conda/simpler_env/bin/python
+export SimplerEnv_PATH=/code/robot/benchmark/SimplerEnv
 export PYTHONPATH=$(pwd):${PYTHONPATH}
 base_port=10097
 
