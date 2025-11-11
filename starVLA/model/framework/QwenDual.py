@@ -66,7 +66,7 @@ class Qwen_Dual(baseframework):
         self.action_model: FlowmatchingActionHead = get_action_model(config=self.config)  # 修复后续引用
 
         self.dino_encoder = get_dino_model(
-            backone_name=getattr(self.config.framework.dino, "dino_backbone", "dinov2_vits14")
+            backbone_name=getattr(self.config.framework.dino, "dino_backbone", "dinov2_vits14")
         )
         self.dino_pro = nn.Linear(
             in_features=self.dino_encoder.num_channels, out_features=self.qwen_vl_interface.model.config.hidden_size

@@ -70,7 +70,7 @@ class InternVLA_M1(baseframework):
         self.layer_qformer = get_layerwise_qformer(config=self.config)
         self.action_model = get_action_model(config=self.config)
         self.dino_encoder = get_dino_model(
-            backone_name=getattr(self.config.framework.dino, "dino_backbone", "dinov2_vits14")
+            backbone_name=getattr(self.config.framework.dino, "dino_backbone", "dinov2_vits14")
         )
         self.dino_pro = nn.Linear(
             in_features=self.dino_encoder.num_channels, out_features=self.qwen_vl_interface.model.config.hidden_size

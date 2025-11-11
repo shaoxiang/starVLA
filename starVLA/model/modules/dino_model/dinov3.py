@@ -13,8 +13,6 @@ import os
 
 from concurrent.futures import ThreadPoolExecutor
 import torch
-
-import torch
 import torch.nn.functional as F
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
