@@ -1,0 +1,3 @@
+[submodule "starVLA/model/modules/map_anything"]
+	path = starVLA/model/modules/map_anything
+	url = https://ghfast.top/https://github.com/facebookresearch/map-anything.git
