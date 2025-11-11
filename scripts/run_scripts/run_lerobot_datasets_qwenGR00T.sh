@@ -45,7 +45,7 @@ accelerate launch \
   --datasets.vla_data.per_device_batch_size 16 \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps 100000 \
-  --trainer.save_interval 20000 \
+  --trainer.save_interval 5000 \
   --trainer.logging_frequency 10 \
   --trainer.eval_interval 100 \
   --trainer.learning_rate.base 4e-5 \

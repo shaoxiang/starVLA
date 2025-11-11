@@ -6,11 +6,14 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_TIMEOUT=7200
 
+# --- 新增这一行来屏蔽警告 ---
+export PYTHONWARNINGS="ignore:The video decoding and encoding capabilities of torchvision are deprecated"
+
 Framework_name=Qwen-Super
 base_vlm=/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct
 
 DIT_TYPE="DiT-B"
-freeze_module_list="qwen_vl_interface.model.model.visual,dino_encoder" # just for fast debug, sota is under fully FT, i.g., freeze_module_list=""
+freeze_module_list="qwen_vl_interface.model.model.visual,dino_encoder,map_encoder" # just for fast debug, sota is under fully FT, i.g., freeze_module_list=""
 
 llavadata="asv2_conversation_en,asv2_detailed_description_en"
 oxe_data_root=/public/home/vlabadmin/dataset/OXE_LEROBOT_DATASET
