@@ -231,13 +231,13 @@ if __name__ == "__main__":
     parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_oxe.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
 
-    debugpy.listen(("0.0.0.0", 10092))
-    print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    debugpy.wait_for_client()
+    # debugpy.listen(("0.0.0.0", 10092))
+    # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+    # debugpy.wait_for_client()
 
     cfg = OmegaConf.load(args.config_yaml)
     # try get model
-    cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3-VL-4B-Instruct"
+    # cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3-VL-4B-Instruct"
      
     model: Qwen_Dual = Qwen_Dual(cfg)
     print(model)

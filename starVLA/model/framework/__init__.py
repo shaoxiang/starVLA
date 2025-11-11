@@ -22,12 +22,20 @@ except NameError:
     pkg_path = None
 
 # Auto-import all framework submodules to trigger registration
+# Import each submodule individually and continue on error so a single
+# broken framework file does not prevent other frameworks from registering.
 if pkg_path is not None:
-    try:
-        for _, module_name, _ in pkgutil.iter_modules(pkg_path):
-            importlib.import_module(f"{__name__}.{module_name}")
-    except Exception as e:
-        print(f"Warning: Failed to auto-import framework submodules: {e}")
+    for _, module_name, _ in pkgutil.iter_modules(pkg_path):
+        mod_name = f"{__name__}.{module_name}"
+        try:
+            importlib.import_module(mod_name)
+        except Exception as e:
+            # Print a helpful warning and continue importing other modules.
+            # Use traceback for full context during debugging.
+            import traceback
+            print(f"Warning: Failed to import framework submodule {mod_name}: {e}")
+            traceback.print_exc()
+            continue
         
 def build_framework(cfg):
     """

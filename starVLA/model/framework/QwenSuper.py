@@ -1,11 +1,11 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
-# Implemented by [Junqiu YU / Fudan University] in [2025]. 
-# Design and Merged by [Jinhui YE / HKUST University] in [2025].
+# Implemented by [Jinhui YE / HKUST University] in [2025]. 
+
 """
-Qwen-GR00T Framework
-A lightweight implementation that Qwen-VL + Flow-matching head to directly predict continuous actions
-Flow-matching header is copyright from GR00T N1.5,
+Qwen-Super Framework
+A lightweight implementation that Qwen2.5-vl + dinov2 + map-anything + Flow-matching head to directly predict continuous actions
+Flow-matching header is copyright from GR00T N1.5
 """
 from typing import List
 from tqdm import tqdm
@@ -15,9 +15,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from PIL import Image
+from torchvision import transforms
 
-
-
+from starVLA.model.modules.dino_model.dino import get_dino_model
+from starVLA.model.modules.map_model import get_map_model
 from starVLA.training.trainer_utils import initialize_overwatch
 
 logger = initialize_overwatch(__name__)
@@ -31,8 +32,8 @@ from starVLA.model.modules.action_model.GR00T_ActionHeader import get_action_mod
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 
-@FRAMEWORK_REGISTRY.register("QwenGR00T")
-class Qwen_GR00T(baseframework):
+@FRAMEWORK_REGISTRY.register("Qwen-Super")
+class Qwen_Super(baseframework):
     """
     Multimodal vision-language-action model.
 
@@ -65,6 +66,27 @@ class Qwen_GR00T(baseframework):
 
         self.action_model: FlowmatchingActionHead = get_action_model(config=self.config)  # 修复后续引用
 
+        self.dino_encoder = get_dino_model(
+            backbone_name=getattr(self.config.framework.dino, "dino_backbone", "dinov2_vits14")
+        )
+        self.dino_pro = nn.Linear(
+            in_features=self.dino_encoder.num_channels, out_features=self.qwen_vl_interface.model.config.hidden_size
+        )
+
+        # --- MAP ENCODER (新) ---
+        if not hasattr(self.config.framework, "map_anything"):
+            raise ValueError("Qwen_Super: 你的 config yaml 文件中缺少 `framework.map_anything` 配置。")
+             
+        self.map_encoder = get_map_model(self.config.framework.map_anything)
+        
+        # 从加载的模型中动态获取 MapAnything 的特征维度
+        C_MAP = self.map_encoder.info_sharing.dim # e.g., 768
+        H_QWEN = self.qwen_vl_interface.model.config.hidden_size
+
+        # 为 MapAnything 的两个输出创建投影层
+        self.map_patch_pro = nn.Linear(C_MAP, H_QWEN)
+        self.map_scale_pro = nn.Linear(C_MAP, H_QWEN)
+        
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
@@ -76,15 +98,29 @@ class Qwen_GR00T(baseframework):
         **kwargs,
     ) -> Tuple:
         """
+        训练前向：直接回归未来动作（无扩散）。
 
+        Flow:
+          1. Build QwenVL inputs (images + instruction tokens)
+          2. Extract hidden states from configured layer range
+          7. Predict action and compute L1 loss
+
+        Args:
+            examples: List[dict], each dict requires:
+                - image: List[PIL.Image] (multi-view)
+                - lang: str instruction
+                - action: np.ndarray or list shaped [T, action_dim]
+            **kwargs: Reserved.
+
+        Returns:
+            dict:
+                action_loss (torch.Tensor): Scalar diffusion noise prediction loss.
         """
         batch_images = [example["image"] for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
         actions = [example["action"] for example in examples]  # label [B， len, 7]
-        
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
         
-
         # Step 1: QWenVL input format
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -96,7 +132,33 @@ class Qwen_GR00T(baseframework):
             )
             # last_hidden_state: [B, seq_len, H]
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
+            
+            # Step 2: DINO Forward
+            image_tensors = self.dino_encoder.prepare_dino_input(batch_images)  #
+            B = len(batch_images)
+            dino_features = self.dino_encoder(image_tensors)  # DINO output is [B*num_view, token, dim]
+            dino_encoded_features = dino_features.reshape(B, -1, dino_features.shape[-1])  # [B, num_view * token, dim]
+            dino_encoded_features = self.dino_pro(dino_encoded_features)  # [B, num_view * token, hidden_size]
 
+            # --- Step 2.2: MapAnything (现在非常简洁) ---
+            
+            # 1. 准备输入:
+            #    `prepare_map_input` 现在是 backbone 的一个方法
+            #    它会处理 examples 列表中的 "image", "intrinsics" 等
+            map_input_list = self.map_encoder.prepare_map_input(examples)
+            
+            # 2. 运行 MapAnythingBackbone
+            map_patch_tokens, map_scale_token = self.map_encoder(map_input_list)
+            
+            # 3. 投影
+            map_patch_tokens_pro = self.map_patch_pro(map_patch_tokens)
+            map_scale_token_pro = self.map_scale_pro(map_scale_token)
+            
+            # Step 3: Feature Concatenation
+            last_hidden = torch.cat(
+                [last_hidden, dino_encoded_features, map_scale_token_pro, map_patch_tokens_pro], dim=1
+            )
+            
         # Step 4: Action Expert Forward and Loss
         with torch.autocast("cuda", dtype=torch.float32):
             # 标签对齐：取最后 chunk_len 段
@@ -119,8 +181,6 @@ class Qwen_GR00T(baseframework):
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
 
             action_loss = self.action_model(last_hidden_repeated, actions_target_repeated, state_repeated)  # (B, chunk_len, action_dim)
-
-
 
         return {"action_loss": action_loss}
 
@@ -167,6 +227,43 @@ class Qwen_GR00T(baseframework):
             )
             # last_hidden_state: [B, seq_len, H]
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
+            
+            # Step 2: DINO Forward
+            image_tensors = self.dino_encoder.prepare_dino_input(batch_images)  #
+            B = len(batch_images)
+            dino_features = self.dino_encoder(image_tensors)  # DINO output is [B*num_view, token, dim]
+            dino_encoded_features = dino_features.reshape(B, -1, dino_features.shape[-1])  # [B, num_view * token, dim]
+            dino_encoded_features = self.dino_pro(dino_encoded_features)  # [B, num_view * token, hidden_size]
+
+            # --- Step 2.2: MapAnything ---
+            
+            # 1. 为 prepare_map_input 重新构建 examples 列表
+            B = len(batch_images)
+            predict_examples = [
+                {"image": batch_images[i], "lang": instructions[i]} 
+                for i in range(B)
+            ]
+            
+            # --- 在这里添加你的机器人额外输入！---
+            # if robot_intrinsics is not None:
+            #    for i in range(B):
+            #        predict_examples[i]["intrinsics"] = robot_intrinsics[i]
+            # if robot_poses is not None:
+            #    for i in range(B):
+            #        predict_examples[i]["camera_poses"] = robot_poses[i]
+            
+            # 2. 准备输入
+            map_input_list = self.map_encoder.prepare_map_input(predict_examples)
+            
+            # 3. 运行
+            map_patch_tokens, map_scale_token = self.map_encoder(map_input_list)
+            map_patch_tokens_pro = self.map_patch_pro(map_patch_tokens)
+            map_scale_token_pro = self.map_scale_pro(map_scale_token)
+
+            # Step 3: Feature Concatenation
+            last_hidden = torch.cat(
+                [last_hidden, dino_encoded_features, map_scale_token_pro, map_patch_tokens_pro], dim=1
+            )
 
         state = torch.from_numpy(np.array(state)).to(last_hidden.device, dtype=last_hidden.dtype) if state is not None else None
         # Step 4: Action Expert Forward and Loss
@@ -176,25 +273,18 @@ class Qwen_GR00T(baseframework):
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
-
-
 if __name__ == "__main__":
     from omegaconf import OmegaConf
-    import debugpy
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_oxe.yaml", help="Path to YAML config")
+    parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/supervla_cotrain_oxe.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
-
-    # debugpy.listen(("0.0.0.0", 10092))
-    # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    # debugpy.wait_for_client()
 
     cfg = OmegaConf.load(args.config_yaml)
     # try get model
-    # cfg.framework.qwenvl.base_vlm = "/data/models/Qwen3-VL-4B-Instruct"
+    cfg.framework.qwenvl.base_vlm = "/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct"
      
-    model: Qwen_GR00T = Qwen_GR00T(cfg)
+    model: Qwen_Super = Qwen_Super(cfg)
     print(model)
 
     # fake sample 
@@ -203,7 +293,7 @@ if __name__ == "__main__":
     sample = {
         "action": np.random.uniform(-1, 1, size=(16, 7)).astype(np.float16), # action_chunk, action_dim
         "image": [image, image], # two views
-        "lang": "This is a fake for testing.",
+        "lang": "This is a fake instruction for testing.",
         "state" : np.random.uniform(-1, 1, size=(1, 7)).astype(np.float16), # chunk, state_dim
     }
 
