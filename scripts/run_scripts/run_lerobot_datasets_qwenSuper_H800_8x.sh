@@ -6,9 +6,6 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_TIMEOUT=7200
 
-# --- 新增这一行来屏蔽警告 ---
-export PYTHONWARNINGS="ignore:The video decoding and encoding capabilities of torchvision are deprecated"
-
 Framework_name=Qwen-Super
 base_vlm=/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct
 

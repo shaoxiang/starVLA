@@ -13,24 +13,20 @@ export NCCL_DEBUG_FILE=/tmp/nccl_debug.log
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
+# === Please modify the following paths according to your environment ===
+###########################################################################################
+
 Framework_name=QwenOFT
 base_vlm=/data/models/Qwen3-VL-4B-Instruct
-
 freeze_module_list='' # just for fast debug, sota is under fully FT, i.g., freeze_module_list=""
-
 # freeze_module_list="qwen_vl_interface.model.model.visual,dino_encoder" # just for fast debug, sota is under fully FT, i.g., freeze_module_list=""
-
 llavadata="asv2_conversation_en,asv2_detailed_description_en"
-
+action_input_dim=2560
 oxe_data_root=/data/dataset/OXE_LEROBOT_DATASET
-
 data_mix=bridge_rt_1
-
 run_root_dir=/data/models/starVLA/qwenoft/Checkpoints
-
 run_id=1106_starvla_qwenoft_oxe
 
-export action_input_dim=2048
 export WANDB_MODE=disabled
 
 output_dir=${run_root_dir}/${run_id}
@@ -62,4 +58,25 @@ accelerate launch \
   --wandb_entity jinhuiye \
   # --is_debug True
 
+
+
+###########################################################################################
+####### multi-node launch example #######
+###########################################################################################
+
+# accelerate launch \
+#   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+#   --main_process_ip $MASTER_ADDR \
+#   --main_process_port $MASTER_PORT \
+#   --machine_rank $SLURM_PROCID \
+#   --num_machines $SLURM_NNODES \
+#   --num_processes=${TOTAL_GPUS} \
+#   starVLA/training/train_starvla.py \
+#   --config_yaml ./starVLA/config/training/starvla_cotrain_oxe.yaml \
+#   --framework.framework_py QwenGR00T \
+#   --framework.qwenvl.base_vlm microsoft/Florence-2-large \
+#   --run_root_dir ${run_root_dir} \
+#   --run_id ${run_id} \
+#   --wandb_project your_project \
+#   --wandb_entity your_name
 
