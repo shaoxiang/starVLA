@@ -270,12 +270,13 @@ class PhysicallyConstrainedFlowMatching(FlowmatchingActionHead):
         super().__init__(config)
         
         # 物理约束参数
+        action_config = config.framework.action_model
         self.collision_threshold = getattr(config, 'collision_threshold', 0.05)
         self.velocity_limit = getattr(config, 'velocity_limit', 1.0)
         
         # 碰撞预测网络
         self.collision_predictor = nn.Sequential(
-            nn.Linear(config.hidden_dim + 7, 256),  # 特征+动作维度
+            nn.Linear(action_config.hidden_dim + action_config.action_dim, 256),  # 特征+动作维度
             nn.ReLU(),
             nn.Linear(256, 128),
             nn.ReLU(),
@@ -424,10 +425,10 @@ class QwenGeoSuper(baseframework):
         # 调整配置以支持跨注意力维度
         if hasattr(config.framework.action_model, 'diffusion_model_cfg'):
             config.framework.action_model.diffusion_model_cfg.cross_attention_dim = H_QWEN
-        
+
         # 使用改进的流匹配头
         self.action_model = PhysicallyConstrainedFlowMatching(
-            config.framework.action_model
+            config
         )
         
         # ================== 其他配置 ==================
@@ -849,13 +850,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config_yaml",
         type=str,
-        default="./starVLA/config/training/geosuper_cotrain.yaml",
+        default="./starVLA/config/training/geosuper.yaml",
         help="Path to YAML config"
     )
     args, clipargs = parser.parse_known_args()
     
     # 加载配置
     cfg = OmegaConf.load(args.config_yaml)
+    cfg.framework.qwenvl.base_vlm = "/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct"
     
     # 创建模型
     model = QwenGeoSuper(cfg)

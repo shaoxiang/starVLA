@@ -37,7 +37,7 @@ framework:
   
   # MapAnything 配置
   map_anything:
-    model_repo_id: "facebook/map-anything-apache"
+    model_repo_id: "facebook/map-anything"
     input_modes: ["images"]
     return_patch_tokens: true
     return_scale_token: true
@@ -74,7 +74,7 @@ framework:
   
   # 动作模型配置
   action_model:
-    action_model_type: "PhysicallyConstrainedFlowMatching"
+    action_model_type: DiT-B
     hidden_size: 1024
     add_pos_embed: true
     max_seq_len: 2048
