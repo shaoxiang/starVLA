@@ -1,0 +1,161 @@
+# QwenSuper-GeometricConstraint 训练配置
+# 核心原则：简洁、可解释、物理约束优先
+
+run_id: qwen-super-geoconstraint
+run_root_dir: results/Checkpoints
+seed: 42
+trackers: [jsonl, wandb]
+wandb_entity: jinhuiye
+wandb_project: geoconstraint-vla
+is_debug: false
+
+# ==================== 硬件配置 ====================
+hardware:
+  device: "cuda"
+  num_gpus: 8
+  mixed_precision: true
+  memory_efficient: true
+  gradient_checkpointing: true
+  gradient_accumulation_steps: 2
+  distributed_strategy: "deepspeed_zero2"
+
+# ==================== 模型配置 ====================
+framework:
+  name: "QwenSuper-GeometricConstraint"
+  
+  # VLM配置
+  qwenvl:
+    base_vlm: /data/models/Qwen3-VL-4B-Instruct
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2048
+    trainable_layers: [28, 29, 30, 31]  # 只微调最后4层
+  
+  # DINO配置
+  dino:
+    dino_backbone: dinov2_vits14
+    trainable: false
+  
+  # MapAnything配置（关键：作为约束源，不融入主链路）
+  map_anything:
+    model_repo_id: "facebook/map-anything"
+    input_modes: ["images"]
+    return_patch_tokens: true
+    return_scale_token: true
+    trainable: false  # 冻结，避免梯度干扰
+  
+  # 几何约束头配置  
+  geom_constraint_head:
+    hidden_dim: 128
+    grasp_threshold: 0.015  # 1.5cm（匹配WidowX 5mm精度）
+    workspace_limits: [0.65, 0.65, 0.65]  # 650mm臂展
+    action_scale: 0.05  # 每步最大5cm
+  
+  # 动作模型配置（与GR00T N1一致）
+  action_model:
+    action_model_type: DiT-B
+    hidden_size: 1024
+    add_pos_embed: true
+    max_seq_len: 2048
+    action_dim: 7  # 根据机器人调整
+    state_dim: 7
+    future_action_window_size: 15
+    action_horizon: 16
+    past_action_window_size: 1
+    repeated_diffusion_steps: 4
+    num_inference_timesteps: 4
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    
+    diffusion_model_cfg:
+      cross_attention_dim: 2048
+      dropout: 0.1
+      num_layers: 16
+      interleave_self_attention: true
+      norm_type: "ada_norm"
+
+# ==================== 数据集配置 ====================
+datasets:
+  # 机器人数据（核心训练数据）
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: /data/dataset/OXE_LEROBOT_DATASET
+    data_mix: bridge_rt_1
+    action_type: delta_ee
+    default_image_resolution: [3, 224, 224]
+    per_device_batch_size: 16
+    obs: ["image_0"]
+    image_size: [224, 224]
+    include_robot_state: true  # 必须包含机器人状态用于几何约束
+    robot_state_format: "end_effector"  # 或 "joint_positions"
+  
+  # VLM数据（可选，用于保持语言能力）
+  vlm_data:
+    dataset_py: vlm_datasets
+    dataformat: llava_json
+    dataset_use: asv2_conversation_en
+    per_device_batch_size: 4
+    max_pixels: 50176
+    model_max_length: 2048
+
+# ==================== 训练器配置 ====================
+trainer:
+  # 基础训练参数
+  max_train_steps: 50000
+  stage0_steps: 10000  # 阶段1：仅训练动作预测
+  num_warmup_steps: 1000
+  save_interval: 5000
+  eval_interval: 1000
+  logging_frequency: 50
+  
+  # 课程学习
+  curriculum_stage: 0  # 起始阶段
+  training_strategy: "curriculum"  # curriculum, end2end
+  
+  # 学习率配置（约束头使用更高LR以快速适应）
+  learning_rate:
+    main: 5e-6  # 主链路（VLM, DiT） 降低主链路LR（避免WidowX小数据过拟合）
+    constraint_head: 1e-4  # 约束头（更高LR）
+  
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 1e-7
+  
+  # 约束损失权重
+  constraint_weight: 0.3  # 提高约束权重（WidowX需要精确物理约束）
+  
+  # 优化器配置
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+  
+  # 梯度配置
+  max_grad_norm: 1.0
+  gradient_clipping: 1.0
+  
+  # 恢复训练
+  pretrained_checkpoint: null
+  reload_modules: null
+
+# ==================== 评估配置 ====================
+# SimplerEnv评估专用配置
+evaluation:
+  env: "simplerenv"  # 标识评估环境
+  robot_type: "widowx_250"
+  tasks: ["pick_place", "push", "open", "close"]
+  metrics:
+    - name: "task_success_rate"
+      weight: 1.0
+    - name: "min_hand_obj_distance"
+      weight: 0.5
+      threshold: 0.02  # 距离<2cm视为成功接触
+    - name: "workspace_violation_rate"
+      weight: 0.3
+      target: 0.0
+
+# ==================== 输出配置 ====================
+output_dir: null  # 由脚本动态设置
+wandb_project: geoconstraint-vla
+wandb_entity: jinhuiye

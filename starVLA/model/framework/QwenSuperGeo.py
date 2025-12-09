@@ -167,6 +167,9 @@ class EgocentricGeometricTransform(nn.Module):
         """
         B, L, H = global_geom_tokens.shape
         
+        print("global_geom_tokens shape:", global_geom_tokens.shape)
+        print("robot_state shape before squeeze:", robot_state.shape)
+        
         # 编码机器人状态
         robot_feat = self.robot_encoder(robot_state).unsqueeze(1)  # [B, 1, H]
         
@@ -266,17 +269,17 @@ class AffordanceAwareModule(nn.Module):
 class PhysicallyConstrainedFlowMatching(FlowmatchingActionHead):
     """物理约束的流匹配动作头"""
     
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, full_config):
+        super().__init__(full_config)
         
         # 物理约束参数
-        action_config = config.framework.action_model
-        self.collision_threshold = getattr(config, 'collision_threshold', 0.05)
-        self.velocity_limit = getattr(config, 'velocity_limit', 1.0)
+        action_config = full_config.framework.action_model
+        self.collision_threshold = getattr(full_config, 'collision_threshold', 0.05)
+        self.velocity_limit = getattr(full_config, 'velocity_limit', 1.0)
         
         # 碰撞预测网络
         self.collision_predictor = nn.Sequential(
-            nn.Linear(action_config.hidden_dim + action_config.action_dim, 256),  # 特征+动作维度
+            nn.Linear(action_config.hidden_size + action_config.action_dim, 256),  # 特征+动作维度
             nn.ReLU(),
             nn.Linear(256, 128),
             nn.ReLU(),
@@ -285,7 +288,7 @@ class PhysicallyConstrainedFlowMatching(FlowmatchingActionHead):
         )
         
         # 平滑度正则化
-        self.smoothness_weight = getattr(config, 'smoothness_weight', 0.1)
+        self.smoothness_weight = getattr(full_config, 'smoothness_weight', 0.1)
         
     def compute_physical_constraints(self, actions, geom_features):
         """
@@ -516,12 +519,14 @@ class QwenGeoSuper(baseframework):
             # ================== 步骤2: 几何感知融合 ==================
             # 2.1 自我中心几何变换（如果需要机器人状态）
             if states is not None:
+                print("states shape:", np.array(states).shape, states)
+
                 robot_states = torch.tensor(
-                    np.array([s[:, 0, :] for s in states]),  # 取当前状态
+                    np.array([s[0, :] for s in states]),  # 取当前状态
                     device=map_patch_tokens_pro.device,
                     dtype=map_patch_tokens_pro.dtype
-                ).mean(dim=1)  # [B, state_dim]
-                
+                ) # 形状为 [B, 7]（此处B=2）
+
                 ego_geom_tokens = self.ego_geom_transform(
                     map_patch_tokens_pro, 
                     robot_states
@@ -726,7 +731,7 @@ class QwenGeoSuper(baseframework):
                 k: v.detach().cpu().numpy() for k, v in attention_info.items()
             },
             'ego_geom_tokens': ego_geom_tokens.detach().cpu().numpy(),
-            'scale_factor': map_scale_token_pro.detach().cpu().numpy()
+            'scale_factor': map_scale_token_pro.detach().cpu().to(torch.float32).numpy()
         }
     
     def visualize_attention(self, images, attention_weights):

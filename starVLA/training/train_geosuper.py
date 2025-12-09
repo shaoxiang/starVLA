@@ -257,7 +257,10 @@ class GeoSuperTrainer(TrainerUtils):
             range(self.cfg.trainer.max_train_steps),
             disable=not self.accelerator.is_local_main_process
         )
-        
+
+        logger.info(f"max_train_steps: {self.cfg.trainer.max_train_steps}, curriculum_stage: {self.cfg.trainer.curriculum_stage}")
+        logger.info(f"train_dataloader length: {len(self.train_dataloader)}")
+
         # 主训练循环
         while self.completed_steps < self.cfg.trainer.max_train_steps:
             # 获取数据批次
@@ -388,12 +391,13 @@ class GeoSuperTrainer(TrainerUtils):
                 batch_images = [example["image"] for example in batch]
                 instructions = [example["lang"] for example in batch]
                 
-                output_dict = self.model.predict_action(
-                    batch_images=batch_images,
-                    instructions=instructions,
-                    use_ddim=True,
-                    num_ddim_steps=20
-                )
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    output_dict = self.model.predict_action(
+                        batch_images=batch_images,
+                        instructions=instructions,
+                        use_ddim=True,
+                        num_ddim_steps=20
+                    )
                 
                 # 计算评估指标
                 if 'normalized_actions' in output_dict:
@@ -599,6 +603,8 @@ if __name__ == "__main__":
     # 合并命令行参数
     dotlist = normalize_dotlist_args(clipargs)
     cli_cfg = OmegaConf.from_dotlist(dotlist)
+    print("配置文件 cfg 结构:", OmegaConf.to_yaml(cfg))
+    print("命令行 cli_cfg 结构:", OmegaConf.to_yaml(cli_cfg))
     cfg = OmegaConf.merge(cfg, cli_cfg)
     
     # 添加额外的配置

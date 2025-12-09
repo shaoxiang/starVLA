@@ -86,6 +86,11 @@ framework:
     repeated_diffusion_steps: 8
     num_inference_timesteps: 4
     num_target_vision_tokens: 64
+
+    noise_beta_alpha: 1.5    
+    noise_beta_beta: 1.0
+    noise_s: 0.999  
+    num_timestep_buckets: 1000
     
     # 物理约束参数
     collision_threshold: 0.05
