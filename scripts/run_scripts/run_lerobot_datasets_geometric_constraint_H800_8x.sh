@@ -44,6 +44,8 @@ echo "========================================"
 stage=0
 stage_dir="${output_dir}/stage_${stage}"
 mkdir -p ${stage_dir}
+log_dir="${stage_dir}/logs"
+mkdir -p ${log_dir}  # 确保日志目录存在
 
 echo "========================================"
 echo "阶段 ${stage}: 基础动作预测训练"
@@ -54,30 +56,30 @@ echo "输出: ${stage_dir}"
 echo "========================================"
 
 accelerate launch \
-  --config_file ./starVLA/config/deepspeed/deepspeed_zero2.yaml \
+  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 8 \
   --main_process_port 29500 \
   starVLA/training/train_geometric_constraint.py \
   --config_yaml ./starVLA/config/training/geometric_constraint.yaml \
-  framework.name ${Framework_name} \
-  framework.qwenvl.base_vlm ${base_vlm} \
-  framework.action_model.action_model_type ${DIT_TYPE} \
-  framework.dino.dino_backbone ${dino_backbone} \
-  framework.map_anything.model_repo_id ${MAP_MODEL} \
-  datasets.vla_data.data_root_dir ${oxe_data_root} \
-  datasets.vla_data.data_mix ${data_mix} \
-  datasets.vla_data.per_device_batch_size 16 \
-  trainer.curriculum_stage ${stage} \
-  trainer.constraint_weight 0.0 \
-  trainer.max_train_steps 10000 \
-  trainer.save_interval 2000 \
-  trainer.logging_frequency 50 \
-  trainer.learning_rate.main 1e-5 \
-  trainer.gradient_accumulation_steps 2 \
-  run_root_dir ${stage_dir} \
-  run_id "${run_id}_stage${stage}_${timestamp}" \
-  wandb_project geoconstraint-vla \
-  wandb_entity jinhuiye \
+  --framework.name ${Framework_name} \
+  --framework.qwenvl.base_vlm ${base_vlm} \
+  --framework.action_model.action_model_type ${DIT_TYPE} \
+  --framework.dino.dino_backbone ${dino_backbone} \
+  --framework.map_anything.model_repo_id ${MAP_MODEL} \
+  --datasets.vla_data.data_root_dir ${oxe_data_root} \
+  --datasets.vla_data.data_mix ${data_mix} \
+  --datasets.vla_data.per_device_batch_size 16 \
+  --trainer.curriculum_stage ${stage} \
+  --trainer.constraint_weight 0.0 \
+  --trainer.max_train_steps 40000 \
+  --trainer.save_interval 10000 \
+  --trainer.logging_frequency 50 \
+  --trainer.learning_rate.main 1e-5 \
+  --trainer.gradient_accumulation_steps 2 \
+  --run_root_dir ${stage_dir} \
+  --run_id "${run_id}_stage${stage}_${timestamp}" \
+  --wandb_project geoconstraint-vla \
+  --wandb_entity jinhuiye \
   --debug False \
   2>&1 | tee "${stage_dir}/logs/train_stage${stage}_${timestamp}.log"
 
@@ -103,6 +105,8 @@ fi
 stage=1
 stage_dir="${output_dir}/stage_${stage}"
 mkdir -p ${stage_dir}
+log_dir="${stage_dir}/logs"
+mkdir -p ${log_dir}  # 确保日志目录存在
 
 echo "========================================"
 echo "阶段 ${stage}: 联合优化训练"
@@ -114,34 +118,34 @@ echo "========================================"
 
 # 从阶段0恢复训练
 accelerate launch \
-  --config_file ./starVLA/config/deepspeed/deepspeed_zero2.yaml \
+  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 8 \
   --main_process_port 29501 \
   starVLA/training/train_geometric_constraint.py \
   --config_yaml ./starVLA/config/training/geometric_constraint.yaml \
-  framework.name ${Framework_name} \
-  framework.qwenvl.base_vlm ${base_vlm} \
-  framework.action_model.action_model_type ${DIT_TYPE} \
-  framework.dino.dino_backbone ${dino_backbone} \
-  framework.map_anything.model_repo_id ${MAP_MODEL} \
-  datasets.vla_data.data_root_dir ${oxe_data_root} \
-  datasets.vla_data.data_mix ${data_mix} \
-  datasets.vla_data.per_device_batch_size 16 \
-  trainer.curriculum_stage ${stage} \
-  trainer.constraint_weight 0.2 \
-  trainer.max_train_steps 50000 \
-  trainer.save_interval 5000 \
-  trainer.logging_frequency 50 \
-  trainer.learning_rate.main 5e-6 \
-  trainer.learning_rate.constraint_head 1e-4 \
-  trainer.num_warmup_steps 500 \
-  trainer.pretrained_checkpoint ${stage0_checkpoint} \
-  trainer.reload_modules "action_model,geom_constraint_head" \
-  trainer.gradient_accumulation_steps 2 \
-  run_root_dir ${stage_dir} \
-  run_id "${run_id}_stage${stage}_${timestamp}" \
-  wandb_project geoconstraint-vla \
-  wandb_entity jinhuiye \
+  --framework.name ${Framework_name} \
+  --framework.qwenvl.base_vlm ${base_vlm} \
+  --framework.action_model.action_model_type ${DIT_TYPE} \
+  --framework.dino.dino_backbone ${dino_backbone} \
+  --framework.map_anything.model_repo_id ${MAP_MODEL} \
+  --datasets.vla_data.data_root_dir ${oxe_data_root} \
+  --datasets.vla_data.data_mix ${data_mix} \
+  --datasets.vla_data.per_device_batch_size 16 \
+  --trainer.curriculum_stage ${stage} \
+  --trainer.constraint_weight 0.2 \
+  --trainer.max_train_steps 40000 \
+  --trainer.save_interval 10000 \
+  --trainer.logging_frequency 50 \
+  --trainer.learning_rate.main 5e-6 \
+  --trainer.learning_rate.constraint_head 1e-4 \
+  --trainer.num_warmup_steps 500 \
+  --trainer.pretrained_checkpoint ${stage0_checkpoint} \
+  --trainer.reload_modules "action_model,geom_constraint_head" \
+  --trainer.gradient_accumulation_steps 2 \
+  --run_root_dir ${stage_dir} \
+  --run_id "${run_id}_stage${stage}_${timestamp}" \
+  --wandb_project geoconstraint-vla \
+  --wandb_entity jinhuiye \
   --debug False \
   2>&1 | tee "${stage_dir}/logs/train_stage${stage}_${timestamp}.log"
 

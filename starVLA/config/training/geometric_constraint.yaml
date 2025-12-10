@@ -66,13 +66,18 @@ framework:
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
+    num_target_vision_tokens: 64
+    num_timestep_buckets: 1000
     
     diffusion_model_cfg:
       cross_attention_dim: 2048
-      dropout: 0.1
-      num_layers: 16
+      dropout: 0.2
+      final_dropout: true
       interleave_self_attention: true
       norm_type: "ada_norm"
+      num_layers: 16
+      output_dim: 1024
+      positional_embeddings: null
 
 # ==================== 数据集配置 ====================
 datasets:
@@ -119,7 +124,7 @@ trainer:
   
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
-    min_lr: 1e-7
+    min_lr: 5e-7
   
   # 约束损失权重
   constraint_weight: 0.3  # 提高约束权重（WidowX需要精确物理约束）
@@ -154,8 +159,3 @@ evaluation:
     - name: "workspace_violation_rate"
       weight: 0.3
       target: 0.0
-
-# ==================== 输出配置 ====================
-output_dir: null  # 由脚本动态设置
-wandb_project: geoconstraint-vla
-wandb_entity: jinhuiye

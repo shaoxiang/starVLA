@@ -603,8 +603,6 @@ if __name__ == "__main__":
     # 合并命令行参数
     dotlist = normalize_dotlist_args(clipargs)
     cli_cfg = OmegaConf.from_dotlist(dotlist)
-    print("配置文件 cfg 结构:", OmegaConf.to_yaml(cfg))
-    print("命令行 cli_cfg 结构:", OmegaConf.to_yaml(cli_cfg))
     cfg = OmegaConf.merge(cfg, cli_cfg)
     
     # 添加额外的配置

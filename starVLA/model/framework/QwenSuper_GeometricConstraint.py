@@ -70,31 +70,41 @@ class GeometricConstraintHead(nn.Module):
             pred_actions: [B, T, action_dim] 预测的动作序列
             geom_tokens: [B, N_geo, geom_dim] MapAnything的几何token
             scale_token: [B, 1, geom_dim] 场景尺度因子
-            robot_state: [B, state_dim] 机器人当前状态
+            robot_state: [B, 1, state_dim] 机器人当前状态
         Returns:
             约束损失字典
         """
         B, T, D = pred_actions.shape
+        print("pred_actions shape:", pred_actions.shape, pred_actions.dtype)
         
         # 1. 从几何token重建度量点云（简化版，实际可用DPT head解码）
         # 假设geom_tokens已编码局部点云，scale_token提供全局尺度
         metric_scale = scale_token.mean(dim=1, keepdim=True)  # [B, 1, geom_dim]
         reconstructed_points = geom_tokens * metric_scale  # [B, N_geo, geom_dim]
+
+        print("metric_scale shape:", metric_scale.shape, metric_scale.dtype)
+        print("geom_tokens shape:", geom_tokens.shape, geom_tokens.dtype)
         
         # 2. 提取预测动作的末端执行器轨迹
         # 假设action的前3维是相对位移（需根据实际动作空间调整）
         # 在action_to_ee_trajectory中应用缩放
         ee_displacement = pred_actions[:, :, :3] * self.action_scale  # 从归一化到米的转换 # [B, T, 3]
+        print("ee_displacement shape:", ee_displacement.shape, ee_displacement.dtype)
         
         # 如果有机器人状态，计算绝对轨迹
         if robot_state is not None:
-            current_ee_pos = robot_state[:, :3].unsqueeze(1)  # [B, 1, 3]
+            print("robot_state shape:", robot_state.shape, robot_state.dtype)
+            current_ee_pos = robot_state[:, 0, :3].unsqueeze(1)  # [B, 1, 3]
+            print("current_ee_pos shape:", current_ee_pos.shape, current_ee_pos.dtype)
             ee_trajectory = current_ee_pos + torch.cumsum(ee_displacement * 0.1, dim=1)  # 积分得到绝对位置
         else:
             ee_trajectory = ee_displacement
         
         # 3. 计算手-物距离约束（抓取阶段）
         # 计算每个时间步手部到所有物体点的最小距离
+        print("ee_trajectory shape:", ee_trajectory.shape, ee_trajectory.dtype)
+        print("reconstructed_points shape:", reconstructed_points.shape, reconstructed_points.dtype)
+
         hand_obj_distances = torch.cdist(ee_trajectory, reconstructed_points[:, :, :3])  # [B, T, N_geo]
         min_distances, _ = hand_obj_distances.min(dim=-1)  # [B, T]
         
@@ -147,9 +157,10 @@ class QwenSuperGeometricConstraint(baseframework):
         super().__init__()
         self.config = config
         
-        # ==================== 主链路组件（保持不变） ====================
+        # ==================== 主链路组件 ====================
         self.qwen_vl_interface = get_vlm_model(config=self.config)
-        self.config.framework.action_model.diffusion_model_cfg.cross_attention_dim = self.qwen_vl_interface.model.config.hidden_size
+        H_QWEN = self.qwen_vl_interface.model.config.hidden_size
+        self.config.framework.action_model.diffusion_model_cfg.cross_attention_dim = H_QWEN
         
         self.action_model: FlowmatchingActionHead = get_action_model(config=self.config)
         self.dino_encoder = get_dino_model(
@@ -168,7 +179,7 @@ class QwenSuperGeometricConstraint(baseframework):
         
         # 动态获取维度
         C_MAP = self.map_encoder.info_sharing.dim
-        H_QWEN = self.qwen_vl_interface.model.config.hidden_size
+        
         
         # 约束头（核心模块）
         self.geom_constraint_head = GeometricConstraintHead(
@@ -181,9 +192,12 @@ class QwenSuperGeometricConstraint(baseframework):
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
-        
         # 损失权重（可调度）
         self.constraint_weight = getattr(config.trainer, 'constraint_weight', 0.2)
+
+        # 验证维度匹配
+        logger.info(f"VLM hidden_dim: {H_QWEN}")
+        logger.info(f"DiT cross_attention_dim: {self.config.framework.action_model.diffusion_model_cfg.cross_attention_dim}")
     
     def forward(
         self,
@@ -197,9 +211,7 @@ class QwenSuperGeometricConstraint(baseframework):
         instructions = [example["lang"] for example in examples]
         actions = [example["action"] for example in examples]
         state = [example["state"] for example in examples] if "state" in examples[0] else None
-        
-        device = next(self.parameters()).device
-        
+                
         # ==================== 主链路：VLM + DINO → DiT ====================
         # 保持主链路完全不变，确保语义-动作映射的纯净性
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
@@ -222,34 +234,50 @@ class QwenSuperGeometricConstraint(baseframework):
             # 主链路融合：VLM + DINO（无几何token！保持纯净）
             main_features = torch.cat([vlm_hidden, dino_encoded], dim=1)  # [B, L_vlm+L_dino, H_qwen]
         
-        # ==================== 动作预测分支 ====================
+            # ==================== 动作预测分支 ====================
         with torch.autocast("cuda", dtype=torch.float32):
-            actions_tensor = torch.tensor(np.array(actions), device=device, dtype=torch.float32)
+            actions_tensor = torch.tensor(
+                np.array(actions),
+                device=main_features.device,
+                dtype=main_features.dtype
+            )
+
             actions_target = actions_tensor[:, -(self.future_action_window_size+1):, :]
             
-            repeat_steps = self.config.trainer.get("repeated_diffusion_steps", 4)
+            repeat_steps = (
+                self.config.trainer.get("repeated_diffusion_steps", 4) if self.config and self.config.trainer else 4
+            )
             actions_target_rep = actions_target.repeat(repeat_steps, 1, 1)
             main_features_rep = main_features.repeat(repeat_steps, 1, 1)
             
             state_rep = None
             if state is not None:
-                state_tensor = torch.tensor(np.array(state), device=device, dtype=torch.float32)
+                state_tensor = torch.tensor(
+                    np.array(state), device=main_features.device, dtype=main_features.dtype
+                )
                 state_rep = state_tensor.repeat(repeat_steps, 1, 1)
             
             # DiT预测动作
-            pred_actions = self.action_model(main_features_rep, actions_target_rep, state_rep)
-            action_loss = self.action_model.compute_loss(pred_actions, actions_target_rep)
-        
+            action_loss = self.action_model(main_features_rep, actions_target_rep, state_rep)
+            with torch.no_grad():
+                print("state_rep shape:", state_rep.shape if state_rep is not None else None)
+                print("state_tensor shape:", state_tensor.shape if state is not None else None)
+                # print("main_features_rep shape:", main_features_rep.shape, main_features_rep.dtype)
+                # print("main_features shape:", main_features.shape, main_features.dtype)
+                pred_actions = self.action_model.predict_action(main_features, state_tensor if state is not None else None) 
+
         # ==================== 几何约束分支（关键：并行计算，不干扰主梯度） ====================
         # 使用torch.no_grad()确保MapAnything梯度不影响主链路
-        with torch.no_grad():
-            map_input_list = self.map_encoder.prepare_map_input(examples)
-            geo_tokens, scale_token = self.map_encoder(map_input_list)  # [B, N_geo, C_MAP], [B, 1, C_MAP]
+        
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.no_grad():
+                map_input_list = self.map_encoder.prepare_map_input(examples)
+                geo_tokens, scale_token = self.map_encoder(map_input_list)  # [B, N_geo, C_MAP], [B, 1, C_MAP]
         
         # 约束损失计算（允许梯度回传至约束头，但不回传至MapAnything）
         constraint_losses = self.geom_constraint_head(
             pred_actions, geo_tokens, scale_token, 
-            state_rep if state_rep is not None else None
+            state_tensor if state is not None else None
         )
         
         # ==================== 总损失合并 ====================
@@ -299,12 +327,19 @@ class QwenSuperGeometricConstraint(baseframework):
             dino_encoded = self.dino_pro(dino_encoded)
             
             main_features = torch.cat([vlm_hidden, dino_encoded], dim=1)
+
+        # print("main_features shape:", main_features.shape, main_features.dtype)
         
         # DiT预测
         state_tensor = torch.from_numpy(np.array(state)).to(main_features.device, dtype=main_features.dtype) if state is not None else None
+        # print("state_tensor shape:", state_tensor.shape, state_tensor.dtype)
+
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(main_features, state_tensor)
         
+        normalized_actions = pred_actions.detach().cpu().numpy()
+        result = {"normalized_actions": normalized_actions}
+
         # 可选：计算几何约束用于分析（但不用于决策）
         if kwargs.get('analyze_constraints', False):
             map_input_list = self.map_encoder.prepare_map_input([
@@ -321,12 +356,9 @@ class QwenSuperGeometricConstraint(baseframework):
                 "trajectory_smooth": constraint_metrics["smoothness_constraint"] < 0.05,
             }
             result["simpler_info"] = simpler_info
-            
+
         else:
             constraint_metrics = None
-        
-        normalized_actions = pred_actions.detach().cpu().numpy()
-        result = {"normalized_actions": normalized_actions}
         
         if constraint_metrics is not None:
             result["constraint_metrics"] = {k: v.item() for k, v in constraint_metrics.items()}
