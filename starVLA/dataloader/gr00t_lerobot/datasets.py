@@ -23,20 +23,19 @@ In this file, we define 3 types of datasets:
 
 See `scripts/load_dataset.py` for examples on how to use these datasets.
 """
-
+import os
 import hashlib
-import json
+import json, torch
 from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
-
+import os, random
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from PIL import Image
-import random
 
 from starVLA.dataloader.gr00t_lerobot.video import get_all_frames, get_frames_by_timestamps
 
@@ -119,6 +118,7 @@ class LeRobotSingleDataset(Dataset):
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
         delete_pause_frame: bool = False,
+        **kwargs,
     ):
         """
         Initialize the dataset.
@@ -400,7 +400,7 @@ class LeRobotSingleDataset(Dataset):
         # @BUG
         # fast get static steps @fangjing --> don't use hash to dynamic sample
         steps_filename =  "steps_data_index.pkl"
-        steps_filename = "steps_332420bad1ab.pkl"
+
 
         steps_path = self.dataset_path / "meta" / steps_filename
         
@@ -410,14 +410,6 @@ class LeRobotSingleDataset(Dataset):
                 with open(steps_path, "rb") as f:
                     cached_data = pickle.load(f)
                 return cached_data["steps"]
-            else:
-                steps_filename = "steps_2d5a34b904d2.pkl"
-                steps_path = self.dataset_path / "meta" / steps_filename
-        
-                with open(steps_path, "rb") as f:
-                    cached_data = pickle.load(f)
-                return cached_data["steps"]
-
 
         except (FileNotFoundError, pickle.PickleError, KeyError) as e:
             print(f"Failed to load cached steps: {e}")
@@ -768,7 +760,7 @@ class LeRobotSingleDataset(Dataset):
             }
         """
         data = {}
-        # Get the data for all modalities
+        # Get the data for all modalities # just for action base data
         self.curr_traj_data = self.get_trajectory_data(trajectory_id)
         # TODO @JinhuiYE The logic below is poorly implemented. Data reading should be directly based on curr_traj_data.
         for modality in self.modality_keys:
@@ -965,8 +957,8 @@ class LeRobotSingleDataset(Dataset):
             array=data_array,
             step_indices=step_indices,
             max_length=max_length,
-            # padding_strategy="first_last" if state_or_action_cfg.absolute else "zero",
-            padding_strategy="zero",           # HACK for realdata
+            padding_strategy="first_last" if state_or_action_cfg.absolute else "zero",
+            # padding_strategy="zero",           # HACK for realdata
         )
 
     def get_language(
@@ -1043,7 +1035,7 @@ class LeRobotSingleDataset(Dataset):
         else:
             raise ValueError(f"Invalid modality: {modality}")
 
-    def save_dataset_statistics(self, save_path: Path | str, format: str = "json") -> None:
+    def _save_dataset_statistics_(self, save_path: Path | str, format: str = "json") -> None:
         """
         Save dataset statistics to specified path in the required format.
         Only includes statistics for keys that are actually used in the dataset.
@@ -1336,20 +1328,20 @@ def generate_action_mask_for_used_keys(action_modalities: dict, used_action_keys
 
 def get_used_modality_keys(modality_keys: dict) -> tuple[set, set]:
     """Extract used action and state keys from modality configuration."""
-    used_action_keys = set()
-    used_state_keys = set()
+    used_action_keys = []
+    used_state_keys = []
     
     # Extract action keys (remove "action." prefix)
     for action_key in modality_keys.get("action", []):
         if action_key.startswith("action."):
             clean_key = action_key.replace("action.", "")
-            used_action_keys.add(clean_key)
+            used_action_keys.append(clean_key)
     
     # Extract state keys (remove "state." prefix)  
     for state_key in modality_keys.get("state", []):
         if state_key.startswith("state."):
             clean_key = state_key.replace("state.", "")
-            used_state_keys.add(clean_key)
+            used_state_keys.append(clean_key)
     
     return used_action_keys, used_state_keys
 
@@ -1369,6 +1361,7 @@ class LeRobotMixtureDataset(Dataset):
         metadata_config: dict = {
             "percentile_mixing_method": "min_max",
         },
+        **kwargs,
     ):
         """
         Initialize the mixture dataset.
@@ -1549,19 +1542,20 @@ class LeRobotMixtureDataset(Dataset):
         for attempt in range(max_retries):
             try:
                 dataset, trajectory_name, step = self.sample_step(index)
-                data = dataset.transforms(dataset.get_step_data(trajectory_name, step))
+                data_raw = dataset.get_step_data(trajectory_name, step)
+                data = dataset.transforms(data_raw)
                 
                 # Process all video keys dynamically
                 images = []
                 for video_key in dataset.modality_keys["video"]:
-
-                    for image in data[video_key]:
-                        # image = data[video_key][0]
-                        # Apply image cropping if enabled and the video key is base_view
-                        # Note: crop_obs_camera functionality has been removed
-                        image = Image.fromarray(image).resize((224, 224))
-                        images.append(image)
+                    image = data[video_key][0]
                     
+                    # Apply image cropping if enabled and the video key is base_view
+                    # Note: crop_obs_camera functionality has been removed
+                    
+                    image = Image.fromarray(image).resize((224, 224)) #TODO check if this is ok
+                    images.append(image)
+                
                 # Get language and action data
                 language = data[dataset.modality_keys["language"][0]][0]
                 action = []
@@ -1579,8 +1573,6 @@ class LeRobotMixtureDataset(Dataset):
                     print(f"Retrying with new sample...")
                     # For retry, we can use a slightly different index to get a new sample
                     # This helps avoid getting stuck on the same problematic sample
-                    # index = (index + 1) % len(self)
-
                     index = random.randint(0, len(self) - 1)
                 else:
                     # All retries exhausted
@@ -1865,13 +1857,17 @@ class LeRobotMixtureDataset(Dataset):
         statistics_data = {}
         
         # Collect actually used keys from all datasets
-        all_used_action_keys = set()
-        all_used_state_keys = set()
+        all_used_action_keys = []
+        all_used_state_keys = []
         
         for dataset in self.datasets:
             used_action_keys, used_state_keys = get_used_modality_keys(dataset.modality_keys)
-            all_used_action_keys.update(used_action_keys)
-            all_used_state_keys.update(used_state_keys)
+            for used_action_key in used_action_keys:
+                if used_action_key not in all_used_action_keys:
+                    all_used_action_keys.append(used_action_key)
+            for used_state_key in used_state_keys:
+                if used_state_key not in all_used_state_keys:
+                    all_used_state_keys.append(used_state_key)
         
         # Organize statistics by tag
         for tag, merged_metadata in self.merged_metadata.items():
@@ -1881,16 +1877,13 @@ class LeRobotMixtureDataset(Dataset):
             if hasattr(merged_metadata.statistics, 'action') and merged_metadata.statistics.action:
                 action_stats = merged_metadata.statistics.action
                 
-                # Filter and reorder keys
+                # Filter and reorder keys - iterate in all_used_action_keys order
                 non_gripper_keys = []
                 gripper_keys = []
                 
-                for key in action_stats.keys():
-                    if key in all_used_action_keys:
-                        if "gripper" in key.lower():
-                            gripper_keys.append(key)
-                        else:
-                            non_gripper_keys.append(key)
+                for key in all_used_action_keys:
+                    if key in action_stats:
+                        non_gripper_keys.append(key)
                 
                 reordered_keys = non_gripper_keys + gripper_keys
                 
@@ -1912,16 +1905,13 @@ class LeRobotMixtureDataset(Dataset):
             if hasattr(merged_metadata.statistics, 'state') and merged_metadata.statistics.state:
                 state_stats = merged_metadata.statistics.state
                 
-                # Filter and reorder keys
+                # Filter and reorder keys - iterate in all_used_state_keys order
                 non_gripper_keys = []
                 gripper_keys = []
                 
-                for key in state_stats.keys():
-                    if key in all_used_state_keys:
-                        if "gripper" in key.lower():
-                            gripper_keys.append(key)
-                        else:
-                            non_gripper_keys.append(key)
+                for key in all_used_state_keys:
+                    if key in state_stats:
+                        non_gripper_keys.append(key)
                 
                 reordered_keys = non_gripper_keys + gripper_keys
                 
@@ -1950,6 +1940,7 @@ class LeRobotMixtureDataset(Dataset):
         print(f"Merged dataset statistics saved to: {save_path}")
         print(f"Used action keys (reordered): {list(all_used_action_keys)}")
         print(f"Used state keys (reordered): {list(all_used_state_keys)}")
+
 
     def _combine_modality_stats(self, modality_stats: dict) -> dict:
         """Backward compatibility wrapper."""

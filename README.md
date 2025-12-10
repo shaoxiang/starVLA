@@ -1,6 +1,9 @@
 # StarVLA: A Lego-like Codebase for Vision-Language-Action Model Developing
 
-![Update](https://img.shields.io/badge/UPDATE-Scripts%20fixed%20%7C%20Packaging%20smoother-red?style=for-the-badge)
+<!-- [![Update](https://img.shields.io/badge/UPDATE-Scripts%20fixed%20%7C%20Packaging%20smoother-red?style=for-the-badge)](https://github.com/starVLA/starVLA) -->
+[![Model & Data on Hugging Face](https://img.shields.io/badge/HuggingFace-Model%20%26%20Data-orange?style=for-the-badge&logo=huggingface)](https://huggingface.co/StarVLA)
+
+**[2025/12/09]** Be the first open-source repository that can train with [train your vlm](starVLA/training/train_starvlm.py), [train your vla](starVLA/training/train_starvla.py), and [train your vla with vlm](starVLA/training/train_starvla_cotrain.py). Check out how to co-train your VLA with multimodal data in [examples/CoTrainVLM](examples/CoTrainVLM/README.md).
 
 **[2025/11/12]** We now support [Florence-2](https://github.com/anyantudre/Florence-2-Vision-Language-Model) as a smaller VLM for resource-constrained development. StarVLA can now run on a single A100 GPU. See the [🚀Train with a smaller VLM](#train-smaller-vlm) section for more details. 
 
@@ -55,7 +58,7 @@ We release a series of pretrained models and checkpoints to facilitate reproduct
 
 #### ✅ Available Checkpoints
 
-| Model | Description | WindowX | Link |
+| Model | Description | WidowX | Link |
 |-------|-------------|------|------|
 | **Qwen2.5-VL-3B-Action** | Add action tokens to Qwen2.5-VL  | - | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen2.5-VL-3B-Instruct-Action) |
 | **Qwen3-VL-4B-Action** | Add action tokens to Qwen3-VL | - | [🤗 Hugging Face](https://huggingface.co/StarVLA/Qwen3-VL-4B-Instruct-Action) |
@@ -181,6 +184,8 @@ pip list | grep -E 'torch|transformers|flash-attn'
 
 If issues persist, pick a flash-attn release that matches your versions (CUDA and torch) or ask chatGPT with searching function for help with the outputs above.
 
+We have verified that `flash-attn==2.7.4.post1` works well with nvcc versions `12.0` and `12.4`.
+
 </details>
 
 <details close>
@@ -217,7 +222,7 @@ If you don't want parallel testing, please run:
 ```bash
 
 # Terminal 1
-bash ./examples/SimplerEnv/start_server.sh
+bash ./examples/SimplerEnv/eval_files/start_server.sh
 # Terminal 2
 bash ./examples/SimplerEnv/start_simpler_env.sh
 ```

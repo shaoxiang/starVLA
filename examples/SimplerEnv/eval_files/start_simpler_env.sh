@@ -8,10 +8,11 @@ export PYTHONPATH=/data/conda/starVLA/bin/python:${PYTHONPATH}
 export PYTHONPATH=$(pwd):${PYTHONPATH}
 
 MODEL_PATH=/data/models/starVLA/Qwen3VL-GR00T-Bridge-RT-1/checkpoints/steps_20000_pytorch_model.pt
+
 # MODEL_PATH=$1
 ckpt_path=${MODEL_PATH}
 TSET_NUM=1
-# DEBUG=1
+# export DEBUG=1
 
 port=5678
 
@@ -39,7 +40,7 @@ for i in "${!ENV_NAMES[@]}"; do
   for ((run_idx=1; run_idx<=TSET_NUM; run_idx++)); do
     echo "▶️ Launching task [${env}] run#${run_idx} on GPU $gpu_id, log → ${task_log}"
 
-    python examples/SimplerEnv/start_simpler_env.py \
+    python examples/SimplerEnv/eval_files/start_simpler_env.py \
       --ckpt-path ${ckpt_path} \
       --port ${port} \
       --robot ${robot} \
@@ -75,7 +76,7 @@ for i in "${!ENV_NAMES_V2[@]}"; do
   for ((run_idx=1; run_idx<=TSET_NUM; run_idx++)); do
     echo "▶️ Launching V2 task [${env}] run#${run_idx} on GPU $gpu_id, log → ${task_log}"
 
-    CUDA_VISIBLE_DEVICES=0 python examples/SimplerEnv/start_simpler_env.py \
+    CUDA_VISIBLE_DEVICES=0 python examples/SimplerEnv/eval_files/start_simpler_env.py \
       --ckpt-path ${ckpt_path} \
       --port ${port} \
       --robot ${robot} \
