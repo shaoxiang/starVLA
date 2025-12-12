@@ -764,8 +764,10 @@ class LeRobotSingleDataset(Dataset):
         self.curr_traj_data = self.get_trajectory_data(trajectory_id)
         # TODO @JinhuiYE The logic below is poorly implemented. Data reading should be directly based on curr_traj_data.
         for modality in self.modality_keys:
+            # print(f"LeRobotSingleDataset Getting data for modality: {modality}")
             # Get the data corresponding to each key in the modality
             for key in self.modality_keys[modality]:
+                # print(f"LeRobotSingleDataset Getting data for key: {key}")
                 data[key] = self.get_data_by_modality(trajectory_id, modality, key, base_index)
         return data
 
@@ -1490,6 +1492,7 @@ class LeRobotMixtureDataset(Dataset):
                 "Dataset": str(dataset),
                 "Sampling weight": float(weight),
             }
+            print(f"Dataset in mixture: {dataset_description}")
             dataset_descriptions.append(dataset_description)
         return json.dumps({"Mixture dataset": dataset_descriptions}, indent=2)
 
@@ -1545,6 +1548,9 @@ class LeRobotMixtureDataset(Dataset):
                 data_raw = dataset.get_step_data(trajectory_name, step)
                 data = dataset.transforms(data_raw)
                 
+                print(f"Dataset: {dataset.tag}, Trajectory: {trajectory_name}, Step: {step}")
+                print(f"Data keys: {list(data.keys())}")
+
                 # Process all video keys dynamically
                 images = []
                 for video_key in dataset.modality_keys["video"]:
@@ -1562,8 +1568,17 @@ class LeRobotMixtureDataset(Dataset):
                 for action_key in dataset.modality_keys["action"]:
                     action.append(data[action_key])
                 action = np.concatenate(action, axis=1).astype(np.float16)
-                
-                return dict(action=action, image=images, lang=language)
+
+                state = []
+                for state_key in dataset.modality_keys["state"]:
+                    if state_key == "state.pad":
+                        print(f"pad: {data[state_key]}")
+                    state.append(data[state_key])
+                state = np.concatenate(state, axis=1).astype(np.float16)
+
+                print(f"tag: {self.tag}")
+
+                return dict(action=action, image=images, lang=language, state=state)
                 
             except Exception as e:
                 last_exception = e
@@ -2052,6 +2067,5 @@ class LeRobotMixtureDataset(Dataset):
                 dataset.set_transforms_metadata(self.merged_metadata[dataset.tag])
         
         print(f"Applied cached statistics for {len(self.merged_metadata)} embodiment tags.")
-
 
 

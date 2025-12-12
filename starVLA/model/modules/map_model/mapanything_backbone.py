@@ -28,28 +28,33 @@ class MapAnythingBackbone(MapAnything):
     3D patch tokens 和 3D scale token。
 
     它还包含了完整的预处理逻辑 `prepare_map_input`。
+    改进：支持自定义分辨率，默认为 518 (最佳几何性能)。
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, image_size: Tuple[int, int] = (518, 518), *args, **kwargs):
         """
         初始化函数。
         
         它会调用 MapAnything 的原始 __init__ 方法，
         并额外创建图像预处理器。
+        Args:
+            image_size: (H, W). MapAnything 原生训练尺寸为 518x518。
+                        显存允许时强烈建议使用 518，否则几何细节会丢失。
         """
         super().__init__(*args, **kwargs)
+
+        self.image_size = image_size
+        print(f"[MapAnythingBackbone] 初始化: 输入分辨率设置为 {self.image_size}")
         
         # --- 预处理器现在是类的一部分 ---
         # MapAnything 的 DINOv2 期望 224x224, Resize+CenterCrop
 
         # --- 🚀 速度优化核心 ---
-        # 原始 MapAnything 使用 BICUBIC，这在训练时太慢了。
-        # 我们改为 BILINEAR，这能带来 ~5-10x 的预处理速度提升。
+        # 原始 MapAnything 使用 BICUBIC，这在训练时太慢了
         self.map_transform = transforms.Compose(
             [
-                # transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
-                transforms.Resize(224, interpolation=transforms.InterpolationMode.BILINEAR), 
-                transforms.CenterCrop(224),
+                transforms.Resize(self.image_size, interpolation=transforms.InterpolationMode.BICUBIC), 
+                transforms.CenterCrop(self.image_size), # 确保是正方形
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]

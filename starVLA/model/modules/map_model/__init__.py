@@ -24,6 +24,7 @@ def get_map_model(config: DictConfig):
     
     model = MapAnythingBackbone.from_pretrained(
         model_repo_id,
+        image_size=(518, 518)
         # force_download=True # 始终强制下载以避免缓存错误
     )
     

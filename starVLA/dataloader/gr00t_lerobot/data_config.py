@@ -170,6 +170,11 @@ class OxeBridgeDataConfig:
     ]
     language_keys = ["annotation.human.action.task_description"]
     observation_indices = [0]
+    # 时间序列扩展：list(range(16)) 生成 [0, 1, 2, ..., 15]，表示从当前时间步开始的 16 个连续时间步长。
+    # 在 VLA 模型中的意义：
+    # 动作预测窗口：模型需要预测未来 16 个时间步的连续动作
+    # 序列长度：决定了动作张量的形状，例如 action.shape = (16, action_dim)
+    # 训练目标：模型学习从当前观察预测接下来的 16 步动作序列
     action_indices = list(range(16))
 
     def modality_config(self):
@@ -592,13 +597,11 @@ class SingleFrankaRobotiqDeltaJointsDataConfig:
 
 ###########################################################################################
 
-
-
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
     "oxe_droid": OxeDroidDataConfig(),
-    "oxe_bridge": OxeBridgeDataConfig(),
-    "oxe_rt1": OxeRT1DataConfig(),
+    "oxe_bridge": OxeBridgeDataConfig(),        # Bridge V2 Robot Data
+    "oxe_rt1": OxeRT1DataConfig(),              # Google RT-1 Robot Data (Large-Scale)
     "demo_sim_franka_delta_joints": SingleFrankaRobotiqDeltaJointsDataConfig(),
     "custom_robot_config": SingleFrankaRobotiqDeltaEefDataConfig()
 }

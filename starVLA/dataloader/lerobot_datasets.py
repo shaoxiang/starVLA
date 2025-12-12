@@ -7,6 +7,8 @@
 from pathlib import Path
 from typing import Sequence
 from omegaconf import OmegaConf
+import torch
+import numpy as np
 
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset
 from starVLA.dataloader.gr00t_lerobot.mixtures import DATASET_NAMED_MIXTURES
@@ -72,7 +74,8 @@ def get_vla_dataset(
     mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
     included_datasets, filtered_mixture_spec = set(), []
     for d_name, d_weight, robot_type in mixture_spec:  
-        dataset_key = (d_name, robot_type)  
+        dataset_key = (d_name, robot_type)
+        print(f"Considering Dataset: `{(d_name, d_weight, robot_type)}`")
         if dataset_key in included_datasets:
             print(f"Skipping Duplicate Dataset: `{(d_name, d_weight, robot_type)}`")
             continue
@@ -94,20 +97,62 @@ def get_vla_dataset(
         **kwargs,
     )
 
-
+def print_batch_details(batch, max_depth=3, current_depth=0):
+    """
+    递归打印 batch 的结构、内容和形状。
+    
+    Args:
+        batch: 要打印的 batch 数据
+        max_depth: 最大递归深度
+        current_depth: 当前递归深度
+    """
+    indent = "  " * current_depth
+    
+    if current_depth > max_depth:
+        print(f"{indent}... (深度超过 {max_depth})")
+        return
+    
+    if isinstance(batch, list):
+        print(f"{indent}List with {len(batch)} items:")
+        for i, item in enumerate(batch):
+            print(f"{indent}  Item {i}:")
+            print_batch_details(item, max_depth, current_depth + 1)
+            if i >= 2:  # 只打印前3个项目
+                print(f"{indent}  ... (还有 {len(batch) - 3} 个项目)")
+                break
+    elif isinstance(batch, dict):
+        print(f"{indent}Dict with keys: {list(batch.keys())}")
+        for key, value in batch.items():
+            print(f"{indent}  Key '{key}':")
+            print_batch_details(value, max_depth, current_depth + 1)
+    elif isinstance(batch, (torch.Tensor, np.ndarray)):
+        print(f"{indent}  Shape: {batch.shape}, Dtype: {batch.dtype}")
+        numel = batch.numel() if isinstance(batch, torch.Tensor) else batch.size
+        if numel <= 10:  # 小张量打印值
+            print(f"{indent}  Values: {batch}")
+        else:
+            print(f"{indent}  Values (first 5): {batch.flatten()[:5]}")
+    elif isinstance(batch, str):
+        print(f"{indent}  String: '{batch}' (length: {len(batch)})")
+    elif isinstance(batch, (int, float)):
+        print(f"{indent}  Value: {batch}")
+    else:
+        print(f"{indent}  Type: {type(batch)}, Value: {str(batch)[:100]}...")
 
 if __name__ == "__main__":
 
-    import debugpy
+    # import debugpy
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_behavior.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
 
-    debugpy.listen(("0.0.0.0", 10092))
-    print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    debugpy.wait_for_client()
-    args.config_yaml = "examples/LIBERO/train_files/starvla_cotrain_libero.yaml"
+    # debugpy.listen(("0.0.0.0", 10092))
+    # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+    # debugpy.wait_for_client()
+
+    # args.config_yaml = "examples/SimplerEnv/train_files/starvla_cotrain_libero.yaml"
+    args.config_yaml = "examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml"
     cfg = OmegaConf.load(args.config_yaml)
 
     vla_dataset_cfg = cfg.datasets.vla_data
@@ -115,7 +160,8 @@ if __name__ == "__main__":
     # vla_dataset_cfg.include_state = True
     # vla_dataset_cfg.data_mix = "BEHAVIOR_dual_base_depth"
     vla_dataset_cfg.task_id = 1
-    for task_id in ["all"]:
+    # for task_id in ["all"]:
+    for task_id in [5,11,13,26,36,27,43,44,45,46]:
         # 11,26,36,37
         # 5,11,13,26,36,27,43,44,45,46
         # 2,3,5,11,13,25,26,27,
@@ -135,9 +181,9 @@ if __name__ == "__main__":
     from tqdm import tqdm
     count = 1
     for batch in tqdm(train_dataloader, desc="Processing Batches"):
-        # print(batch)
-        # print(1)
-        if count > 1:
+        print(batch)
+        print(f"\n=== Batch {count} ===")
+        print_batch_details(batch)
+        if count >= 2:  # 只打印前2个batch
             break
         count += 1
-        pass
