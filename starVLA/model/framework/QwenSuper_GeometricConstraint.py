@@ -66,22 +66,29 @@ def differentiable_trajectory_integration(
     """
     将相对动作积分为绝对轨迹
     Args:
-        initial_state: [B, 7] (x, y, z, r, p, y, g)
+        initial_state: [B, 7] or [B, 1, 7] (x, y, z, r, p, y, g)
         delta_actions: [B, T, 7] (dx, dy, dz, dr, dp, dy, dg)
         scale_factor: 动作缩放因子 (归一化空间 -> 物理空间)
     Returns:
         abs_pos: [B, T, 3] 绝对位置轨迹
         abs_rpy: [B, T, 3] 绝对欧拉角轨迹
     """
+    # 确保 initial_state 是 [B, 7]，如果是 [B, 1, 7] 则压缩维度
+    if initial_state.dim() == 3 and initial_state.shape[1] == 1:
+        initial_state = initial_state.squeeze(1)
+
     # 分离位置和姿态增量
+    # delta_actions: [B, T, 7] -> delta_pos: [B, T, 3]
     delta_pos = delta_actions[:, :, :3] * scale_factor
     delta_rpy = delta_actions[:, :, 3:6] * scale_factor # 假设角度也是归一化的，需缩放
     
     # 初始状态扩展
-    start_pos = initial_state[:, :3].unsqueeze(1) # [B, 1, 3]
-    start_rpy = initial_state[:, 3:6].unsqueeze(1) # [B, 1, 3]
+    # initial_state: [B, 7] -> slice -> [B, 3] -> unsqueeze -> [B, 1, 3]
+    start_pos = initial_state[:, :3].unsqueeze(1) 
+    start_rpy = initial_state[:, 3:6].unsqueeze(1) 
     
     # 累积求和 (积分)
+    # [B, 1, 3] + [B, T, 3] -> [B, T, 3] (Broadcasting)
     traj_pos = start_pos + torch.cumsum(delta_pos, dim=1)
     traj_rpy = start_rpy + torch.cumsum(delta_rpy, dim=1)
     
@@ -285,6 +292,10 @@ class QwenSuperGeometricConstraint(baseframework):
             in_features=self.dino_encoder.num_channels, 
             out_features=H_QWEN
         )
+
+        self.future_action_window_size = config.framework.action_model.future_action_window_size
+        self.past_action_window_size = config.framework.action_model.past_action_window_size
+        self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
         
         # 4. MapAnything (Physics Engine)
         if not hasattr(self.config.framework, "map_anything"):
@@ -351,7 +362,7 @@ class QwenSuperGeometricConstraint(baseframework):
                 # 妥协方案：在训练阶段，我们仅使用 predict_action (no_grad) 来监控，
                 # 而让几何约束头作为一个辅助任务 (Auxiliary Task)：预测可行性。
                 # 但为了响应 "Physical Constraint Layer"，我们尝试生成动作：
-                pred_actions_for_loss = self.action_model.forward_predict(last_hidden, state) # [B, T, 7]
+                pred_actions_for_loss = self.action_model.predict_action(last_hidden, state) # [B, T, 7]
 
         # --- 3. 几何约束 (Physical Constraint Stream) ---
         # 并行分支，不干扰主 Visual Encoder 梯度，但梯度回传给 Action Model (如果 pred_actions_for_loss 在图中)
@@ -445,7 +456,7 @@ class QwenSuperGeometricConstraint(baseframework):
         wrist_views = [to_pil_preserve(example["wrist_views"]) for example in examples] if "wrist_views" in examples[0] else None #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
         states = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
-  
+        print(states)
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", [224,224])
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
@@ -519,7 +530,7 @@ if __name__ == "__main__":
     model = model.to(device)
     forward_output = model(batch)
     action_loss = forward_output['action_loss']
-    print(f"Action Loss: {action_loss.item()}")
+    print(f"Action Loss: {action_loss}")
 
     # test predict action
     predict_output = model.predict_action([sample]) #, state=[batch[0]["state"]]
@@ -534,7 +545,7 @@ if __name__ == "__main__":
     # vla_dataset_cfg.include_state = True
     # vla_dataset_cfg.data_mix = "BEHAVIOR_challenge"
     # vla_dataset_cfg.data_mix = "BEHAVIOR_rgp_dual_history"
-    vla_dataset_cfg.task_id = 40
+    vla_dataset_cfg.task_id = 5
     vla_dataset_cfg.video_backend = "torchvision_av"
     dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
 
@@ -546,7 +557,8 @@ if __name__ == "__main__":
         num_workers=1,  # For Debug
         collate_fn=collate_fn,
     )
-    # 
+    
+    from tqdm import tqdm
     count = 0
     for batch in tqdm(train_dataloader, desc="Processing Batches"):
         batch

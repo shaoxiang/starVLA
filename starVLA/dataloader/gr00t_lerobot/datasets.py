@@ -28,7 +28,7 @@ import hashlib
 import json, torch
 from collections import defaultdict
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Dict
 import os, random
 import numpy as np
 import pandas as pd
@@ -1530,6 +1530,38 @@ class LeRobotMixtureDataset(Dataset):
         trajectory_id, base_index = dataset.all_steps[single_step_index]
         return dataset, trajectory_id, base_index
 
+    def xyzw_to_rpy(self, xyzw_dict: Dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        将四元数 (x, y, z, w) 转换为欧拉角 (roll, pitch, yaw)
+        
+        Args:
+            xyzw_dict: 包含四元数分量的字典，键为 'rx', 'ry', 'rz', 'rw'
+            
+        Returns:
+            tuple: (roll, pitch, yaw) 分别表示绕 x, y, z 轴的旋转角度（弧度）
+        """
+        # 提取四元数分量
+        x = xyzw_dict['state.rx']  # 对应四元数的 x 分量
+        y = xyzw_dict['state.ry']  # 对应四元数的 y 分量
+        z = xyzw_dict['state.rz']  # 对应四元数的 z 分量
+        w = xyzw_dict['state.rw']  # 对应四元数的 w 分量
+        
+        # 计算旋转矩阵元素
+        # 根据四元数到旋转矩阵的转换公式
+        t0 = 2.0 * (w * x + y * z)
+        t1 = 1.0 - 2.0 * (x * x + y * y)
+        roll_x = np.arctan2(t0, t1)
+        
+        t2 = 2.0 * (w * y - z * x)
+        t2 = np.clip(t2, -1.0, 1.0)  # 确保值在 [-1, 1] 范围内，避免 arcsin 异常
+        pitch_y = np.arcsin(t2)
+        
+        t3 = 2.0 * (w * z + x * y)
+        t4 = 1.0 - 2.0 * (y * y + z * z)
+        yaw_z = np.arctan2(t3, t4)
+        
+        return roll_x, pitch_y, yaw_z
+
     def __getitem__(self, index: int) -> dict:
         """Get the data for a single trajectory and start index.
 
@@ -1548,52 +1580,57 @@ class LeRobotMixtureDataset(Dataset):
                 data_raw = dataset.get_step_data(trajectory_name, step)
                 data = dataset.transforms(data_raw)
                 
-                print(f"Dataset: {dataset.tag}, Trajectory: {trajectory_name}, Step: {step}")
-                print(f"Data keys: {list(data.keys())}")
-
-                # Process all video keys dynamically
-                images = []
-                for video_key in dataset.modality_keys["video"]:
-                    image = data[video_key][0]
-                    
-                    # Apply image cropping if enabled and the video key is base_view
-                    # Note: crop_obs_camera functionality has been removed
-                    
-                    image = Image.fromarray(image).resize((224, 224)) #TODO check if this is ok
-                    images.append(image)
+                # 预先计算图像列表
+                images = [
+                    Image.fromarray(data[video_key][0]).resize((224, 224))
+                    for video_key in dataset.modality_keys["video"]
+                ]
                 
-                # Get language and action data
+                # 获取语言数据
                 language = data[dataset.modality_keys["language"][0]][0]
-                action = []
-                for action_key in dataset.modality_keys["action"]:
-                    action.append(data[action_key])
-                action = np.concatenate(action, axis=1).astype(np.float16)
-
-                state = []
-                for state_key in dataset.modality_keys["state"]:
-                    if state_key == "state.pad":
-                        print(f"pad: {data[state_key]}")
-                    state.append(data[state_key])
-                state = np.concatenate(state, axis=1).astype(np.float16)
-
-                print(f"tag: {self.tag}")
-
-                return dict(action=action, image=images, lang=language, state=state)
                 
+                # 优化动作拼接
+                action_parts = [data[action_key] for action_key in dataset.modality_keys["action"]]
+                action = np.concatenate(action_parts, axis=1).astype(np.float16)
+                
+                # 优化状态构建
+                state_parts = []
+                xyzw_buffer = {}
+                
+                for state_key in dataset.modality_keys["state"]:
+                    if dataset.tag == "oxe_rt1":
+                        if state_key in ["state.rx", "state.ry", "state.rz", "state.rw"]:
+                            # 存储四元数分量
+                            xyzw_buffer[state_key] = data[state_key]
+                        elif state_key == "state.gripper":
+                            # 将四元数转换为欧拉角
+                            roll, pitch, yaw = self.xyzw_to_rpy(xyzw_buffer)
+                            state_parts.extend([roll, pitch, yaw, data[state_key]])
+                            xyzw_buffer.clear()  # 清空缓冲区
+                        else:
+                            state_parts.append(data[state_key])
+                    elif dataset.tag == "oxe_bridge":
+                        if state_key != "state.pad":
+                            state_parts.append(data[state_key])
+                    else:
+                        state_parts.append(data[state_key])
+                
+                state = np.concatenate(state_parts, axis=1).astype(np.float16)
+                
+                return {
+                    "action": action,
+                    "image": images,
+                    "lang": language,
+                    "state": state
+                }
+                    
             except Exception as e:
                 last_exception = e
                 if attempt < max_retries - 1:
-                    # Log the error but continue trying
                     print(f"Attempt {attempt + 1}/{max_retries} failed for index {index}: {e}")
-                    print(f"Retrying with new sample...")
-                    # For retry, we can use a slightly different index to get a new sample
-                    # This helps avoid getting stuck on the same problematic sample
-                    index = random.randint(0, len(self) - 1)
+                    index = np.random.randint(0, len(self))
                 else:
-                    # All retries exhausted
                     print(f"All {max_retries} attempts failed for index {index}")
-                    print(f"Last error: {last_exception}")
-                    # Return a dummy sample or re-raise the exception
                     raise last_exception
 
     def __len__(self) -> int:

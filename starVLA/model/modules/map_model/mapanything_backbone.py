@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from torchvision import transforms
 
