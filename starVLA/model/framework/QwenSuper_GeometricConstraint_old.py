@@ -139,7 +139,7 @@ class GeometricConstraintHead(nn.Module):
         }
 
 
-@FRAMEWORK_REGISTRY.register("QwenSuper-GeometricConstraint")
+@FRAMEWORK_REGISTRY.register("QwenSuper-GeometricConstraint-Old")
 class QwenSuperGeometricConstraint(baseframework):
     """
     几何约束增强的VLA模型

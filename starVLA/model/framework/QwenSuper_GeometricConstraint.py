@@ -253,7 +253,7 @@ class GeometricConstraintHead(nn.Module):
         workspace_loss = F.relu(-abs_traj_pos[:, :, 2]).mean() # Z 不能为负
         
         return {
-            "dist_constraint": grasp_dist_loss,
+            "distance_constraint": grasp_dist_loss,
             "orient_constraint": orientation_loss * 0.5, # 姿态权重略低
             "collision_constraint": collision_loss,
             "workspace_constraint": workspace_loss,
@@ -386,13 +386,15 @@ class QwenSuperGeometricConstraint(baseframework):
         # --- 4. 总损失聚合 ---
         geo_loss_total = sum([v for k, v in constraint_dict.items() if "debug" not in k])
         total_loss = action_loss + self.constraint_weight * geo_loss_total
-        
+
         return {
             "loss": total_loss,
-            "action_loss": action_loss.item(),
-            "dist_constraint": constraint_dict["dist_constraint"].item(),
+            "action_loss": action_loss,
+            "distance_constraint": constraint_dict["distance_constraint"].item(),
             "orient_constraint": constraint_dict["orient_constraint"].item(),
             "collision_constraint": constraint_dict["collision_constraint"].item(),
+            "workspace_constraint": constraint_dict["workspace_constraint"].item(),
+            "debug_min_dist": constraint_dict["debug_min_dist"].item(),
         }
 
     @torch.inference_mode()
@@ -456,7 +458,7 @@ class QwenSuperGeometricConstraint(baseframework):
         wrist_views = [to_pil_preserve(example["wrist_views"]) for example in examples] if "wrist_views" in examples[0] else None #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
         states = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
-        print(states)
+        # print(states)
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", [224,224])
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
@@ -529,11 +531,13 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     forward_output = model(batch)
+    print("Forward Output Keys:", forward_output.keys(), forward_output)
     action_loss = forward_output['action_loss']
     print(f"Action Loss: {action_loss}")
 
     # test predict action
     predict_output = model.predict_action([sample]) #, state=[batch[0]["state"]]
+    print("Predict Output Keys:", predict_output.keys(), predict_output)
     normalized_actions = predict_output['normalized_actions']
     print(f"Unnormalized Action: {normalized_actions}")
 
@@ -569,7 +573,8 @@ if __name__ == "__main__":
     # try get model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    model(batch)
-
+    forward_output = model(batch)
+    print("Forward Output Keys:", forward_output.keys(), forward_output)
     pred = model.predict_action(examples=[sample]) #, state=[batch[0]["state"]]
+    print("Predict Output Keys:", pred.keys(), pred)
     print(f"✓ 推理成功: actions_shape={pred['normalized_actions'].shape}")

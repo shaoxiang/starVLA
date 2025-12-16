@@ -93,6 +93,7 @@ datasets:
     image_size: [224, 224]
     include_robot_state: true  # 必须包含机器人状态用于几何约束
     robot_state_format: "end_effector"  # 或 "joint_positions"
+    video_backend: torchvision_av
   
   # VLM数据（可选，用于保持语言能力）
   vlm_data:
@@ -119,7 +120,7 @@ trainer:
   
   # 学习率配置（约束头使用更高LR以快速适应）
   learning_rate:
-    main: 5e-6  # 主链路（VLM, DiT） 降低主链路LR（避免WidowX小数据过拟合）
+    base: 5e-6
     constraint_head: 1e-4  # 约束头（更高LR）
   
   lr_scheduler_type: cosine_with_min_lr

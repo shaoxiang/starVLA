@@ -31,6 +31,8 @@ from transformers import get_scheduler
 # Local imports
 from starVLA.training.trainer_utils.trainer_tools import normalize_dotlist_args
 from starVLA.model.framework import build_framework
+from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
+from starVLA.training.trainer_utils.trainer_tools import build_param_lr_groups
 from starVLA.dataloader import build_dataloader
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -120,7 +122,7 @@ class CurriculumManager:
         return current_step >= next_stage_config['max_steps']
 
 
-class GeometricConstraintTrainer:
+class GeometricConstraintTrainer(TrainerUtils):
     """几何约束VLA训练器"""
     
     def __init__(self, cfg, model, train_dataloader, optimizer, lr_scheduler, accelerator):
@@ -157,27 +159,46 @@ class GeometricConstraintTrainer:
         seed = getattr(self.cfg, 'seed', 42) + rank
         set_seed(seed)
         
-        # 加载预训练检查点（如有）
-        if hasattr(self.cfg.trainer, 'pretrained_checkpoint') and self.cfg.trainer.pretrained_checkpoint:
-            self._load_checkpoint(self.cfg.trainer.pretrained_checkpoint)
+        # 加载预训练权重
+        if hasattr(self.cfg.trainer, "pretrained_checkpoint") and self.cfg.trainer.pretrained_checkpoint:
+            pretrained_checkpoint = self.cfg.trainer.pretrained_checkpoint
+            reload_modules = (
+                self.cfg.trainer.reload_modules if hasattr(self.cfg.trainer, "reload_modules") else None
+            )
+            self.model = self.load_pretrained_backbones(self.model, pretrained_checkpoint, reload_modules=reload_modules)
+
+        # 冻结参数
+        freeze_modules = (
+            self.cfg.trainer.freeze_modules
+            if (self.cfg and hasattr(self.cfg.trainer, "freeze_modules"))
+            else None
+        )
+        self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
         
         # 初始化课程学习阶段
         self.curriculum.set_stage(self.cfg.trainer.curriculum_stage)
         
         # 分布式准备
-        self.model, self.optimizer, self.train_dataloader = self.accelerator.prepare(
-            self.model, self.optimizer, self.train_dataloader
+        self.model, self.optimizer, self.train_dataloader = self.setup_distributed_training(
+            self.accelerator,  # 必须是第一个参数
+            self.model,
+            self.optimizer,
+            self.train_dataloader,
         )
         
         # 初始化WandB
         if self.enable_wandb and self.accelerator.is_main_process:
             wandb.init(
                 name=self.cfg.run_id,
-                dir=self.cfg.output_dir,
+                dir=os.path.join(self.cfg.output_dir, "wandb"),
                 project=self.cfg.wandb_project,
                 entity=self.cfg.wandb_entity,
+                group="vla-train",
                 config=OmegaConf.to_container(self.cfg, resolve=True)
             )
+        
+        # 打印可训练参数
+        self.print_trainable_parameters(self.model)
         
         if self.accelerator.is_main_process:
             logger.info("训练准备完成")
@@ -210,6 +231,19 @@ class GeometricConstraintTrainer:
         else:
             self.model.load_state_dict(checkpoint, strict=False)
     
+    def _create_data_iterators(self):
+        """创建数据迭代器"""
+        self.train_iter = iter(self.train_dataloader)
+
+    def _get_next_batch(self):
+        """获取下一个批次（自动处理数据循环）"""
+        try:
+            batch = next(self.train_iter)
+        except StopIteration:
+            self.train_iter = iter(self.train_dataloader)
+            batch = next(self.train_iter)
+        return batch
+    
     def train(self):
         """主训练循环"""
         if self.accelerator.is_main_process:
@@ -217,7 +251,9 @@ class GeometricConstraintTrainer:
             logger.info(f"  总步数: {self.cfg.trainer.max_train_steps}")
             logger.info(f"  批次大小: {self.total_batch_size}")
         
-        data_iter = iter(self.train_dataloader)
+        # 准备数据迭代器
+        self._create_data_iterators()
+        
         progress_bar = tqdm(
             range(self.cfg.trainer.max_train_steps),
             disable=not self.accelerator.is_local_main_process
@@ -225,22 +261,36 @@ class GeometricConstraintTrainer:
         
         while self.completed_steps < self.cfg.trainer.max_train_steps:
             # 获取数据批次
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                data_iter = iter(self.train_dataloader)
-                batch = next(data_iter)
+            t_start_data = time.perf_counter()
+            batch = self._get_next_batch()
+            t_end_data = time.perf_counter()
             
             # 训练步骤
+            t_start_model = time.perf_counter()
             metrics = self._train_step(batch)
+            t_end_model = time.perf_counter()
             
             # 更新进度
             if self.accelerator.sync_gradients:
                 progress_bar.update(1)
                 self.completed_steps += 1
             
+            if self.accelerator.is_main_process:
+                progress_bar.set_postfix(
+                    {
+                        "data_times": f"{t_end_data - t_start_data:.3f}",
+                        "model_times": f"{t_end_model - t_start_model:.3f}",
+                    }
+                )
+            
             # 日志记录
             if self.completed_steps % self.cfg.trainer.logging_frequency == 0:
+                # 添加学习率
+                metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
+                
+                # 添加轮次信息
+                metrics["epoch"] = round(self.completed_steps / len(self.train_dataloader), 2)
+                
                 self._log_metrics(metrics)
             
             # 保存检查点
@@ -271,6 +321,7 @@ class GeometricConstraintTrainer:
                 output_dict = self.model(batch)
                 
                 # 主损失（已包含约束加权）
+                action_loss = output_dict["action_loss"]
                 total_loss = output_dict["loss"]
             
             # 反向传播
@@ -289,15 +340,23 @@ class GeometricConstraintTrainer:
         
         # 收集指标
         metrics = {
-            "total_loss": total_loss.item(),
-            "action_loss": output_dict["action_loss"],
-            "distance_constraint": output_dict["distance_constraint"],
-            "workspace_constraint": output_dict["workspace_constraint"],
-            "smoothness_constraint": output_dict["smoothness_constraint"],
-            "min_hand_obj_dist": output_dict["min_hand_obj_dist"],
-            "curriculum_stage": self.curriculum.current_stage,
-            "learning_rate": self.lr_scheduler.get_last_lr()[0],
+            "total_loss": total_loss,
+            "action_dit_loss": action_loss,
         }
+        
+        # 添加其他约束指标（如果存在）
+        if "distance_constraint" in output_dict:
+            metrics["distance_constraint"] = output_dict["distance_constraint"]
+        if "workspace_constraint" in output_dict:
+            metrics["workspace_constraint"] = output_dict["workspace_constraint"]
+        if "orient_constraint" in output_dict:
+            metrics["orient_constraint"] = output_dict["orient_constraint"]
+        if "collision_constraint" in output_dict:
+            metrics["collision_constraint"] = output_dict["collision_constraint"]
+        if "debug_min_dist" in output_dict:
+            metrics["debug_min_dist"] = output_dict["debug_min_dist"]
+                
+        metrics["curriculum_stage"] = self.curriculum.current_stage
         
         return metrics
     
@@ -307,14 +366,22 @@ class GeometricConstraintTrainer:
             return
         
         # 打印日志
-        logger.info(
-            f"步骤 {self.completed_steps}: "
-            f"loss={metrics['total_loss']:.4f}, "
-            f"action={metrics['action_loss']:.4f}, "
-            f"dist_constraint={metrics['distance_constraint']:.4f}, "
-            f"min_dist={metrics['min_hand_obj_dist']:.3f}m, "
-            f"lr={metrics['learning_rate']:.2e}"
-        )
+        log_str = f"步骤 {self.completed_steps}: total_loss={metrics['total_loss']:.4f}"
+        if "action_dit_loss" in metrics:
+            log_str += f", action_loss={metrics['action_dit_loss']:.4f}"
+        if "distance_constraint" in metrics:
+            log_str += f", distance_constraint={metrics['distance_constraint']:.4f}"
+        if "workspace_constraint" in metrics:
+            log_str += f", workspace_constraint={metrics['workspace_constraint']:.4f}"
+        if "orient_constraint" in metrics:
+            log_str += f", orient_constraint={metrics['orient_constraint']:.4f}"
+        if "collision_constraint" in metrics:
+            log_str += f", collision_constraint={metrics['collision_constraint']:.4f}"
+        if "debug_min_dist" in metrics:
+            log_str += f", min_dist={metrics['debug_min_dist']:.3f}m"
+        log_str += f", lr={metrics['learning_rate']:.2e}"
+        
+        logger.info(log_str)
         
         # WandB记录
         if self.enable_wandb:
@@ -352,16 +419,30 @@ class GeometricConstraintTrainer:
         
         self.model.eval()
         try:
-            batch = next(iter(self.train_dataloader))
+            batch = self._get_next_batch()
             with torch.no_grad():
                 output = self.model(batch)
             
             # 记录评估指标
             eval_metrics = {
-                "eval_total_loss": output["loss"].item(),
-                "eval_action_loss": output["action_loss"],
-                "eval_distance_constraint": output["distance_constraint"],
+                "eval_total_loss": output["total_loss"].item(),
+                "eval_action_loss": output["action_loss"].item(),
             }
+            
+            if "distance_constraint" in output:
+                eval_metrics["eval_distance_constraint"] = output["distance_constraint"]
+            if "workspace_constraint" in output:
+                eval_metrics["eval_workspace_constraint"] = output["workspace_constraint"]
+            if "orient_constraint" in output:
+                eval_metrics["eval_orient_constraint"] = output["orient_constraint"]
+            if "collision_constraint" in output:    
+                eval_metrics["eval_collision_constraint"] = output["collision_constraint"]  
+            if "debug_min_dist" in output:
+                eval_metrics["eval_debug_min_dist"] = output["debug_min_dist"]
+            if "debug_dist" in output:
+                eval_metrics["eval_debug_dist"] = output["debug_dist"]
+
+            logger.info(eval_metrics)
             
             if self.enable_wandb:
                 wandb.log(eval_metrics, step=self.completed_steps)
@@ -406,7 +487,7 @@ def setup_directories(cfg) -> Path:
 def build_model(cfg):
     """构建模型"""
     if accelerator.is_main_process:
-        logger.info(f"构建模型: {cfg.framework.name}")
+        logger.info(f"构建模型: {cfg.framework.qwenvl.base_vlm}")
     model = build_framework(cfg)
     return model
 
@@ -420,43 +501,36 @@ def prepare_data(cfg):
         cfg=cfg,
         dataset_py=cfg.datasets.vla_data.dataset_py
     )
+    
+    accelerator.dataloader_config.dispatch_batches = False
+    dist.barrier()
+    
     return train_dataloader
 
 
 def setup_optimizer_and_scheduler(model, cfg):
     """设置优化器和学习率调度器"""
-    # 参数分组：主链路低LR，约束头高LR
-    param_groups = [
-        {  # 主链路（VLM, DiT, DINO）
-            "params": [
-                p for n, p in model.named_parameters()
-                if "geom_constraint_head" not in n and p.requires_grad
-            ],
-            "lr": cfg.trainer.learning_rate.main,
-            "weight_decay": cfg.trainer.optimizer.weight_decay,
-        },
-        {  # 约束头（GeoConstraintHead）
-            "params": [
-                p for n, p in model.named_parameters()
-                if "geom_constraint_head" in n and p.requires_grad
-            ],
-            "lr": cfg.trainer.learning_rate.constraint_head,
-            "weight_decay": cfg.trainer.optimizer.weight_decay,
-        },
-    ]
-    
+    # 使用从原始trainer工具中提取的参数分组函数
+    param_groups = build_param_lr_groups(model=model, cfg=cfg)
     optimizer = torch.optim.AdamW(
         param_groups,
+        lr=cfg.trainer.learning_rate.base,
         betas=tuple(cfg.trainer.optimizer.betas),
+        weight_decay=cfg.trainer.optimizer.weight_decay,
         eps=cfg.trainer.optimizer.eps,
     )
-    
+
+    # 打印优化器组信息
+    if dist.is_initialized() and dist.get_rank() == 0:
+        for i, group in enumerate(optimizer.param_groups):
+            logger.info(f"LR Group {group['name']}: lr={group['lr']}, num_params={len(group['params'])}")
+
     lr_scheduler = get_scheduler(
         name=cfg.trainer.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=cfg.trainer.num_warmup_steps,
         num_training_steps=cfg.trainer.max_train_steps,
-        scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,
+        scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,  # 最小学习率
     )
     
     return optimizer, lr_scheduler
@@ -506,6 +580,7 @@ if __name__ == "__main__":
     
     # 加载配置
     cfg = OmegaConf.load(args.config_yaml)
+    cfg.framework.qwenvl.base_vlm = "/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct"
     
     # 合并命令行参数
     dotlist = normalize_dotlist_args(clipargs)
