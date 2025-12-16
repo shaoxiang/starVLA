@@ -89,7 +89,6 @@ class _QWen_VL_Interface(nn.Module):
             model_id,
             attn_implementation="flash_attention_2",
             torch_dtype="auto",
-            device_map="cuda",
         )
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
@@ -97,6 +96,9 @@ class _QWen_VL_Interface(nn.Module):
         self.model = model
         self.processor = processor
         self.config = config
+
+        self._ACTION_TOKEN_MIN = _ACTION_TOKEN_MIN
+        self._ACTION_TOKEN_MAX = _ACTION_TOKEN_MAX
 
     def forward(
         self,

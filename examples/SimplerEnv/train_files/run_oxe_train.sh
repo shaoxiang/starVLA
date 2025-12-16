@@ -17,7 +17,7 @@ config_yaml=./examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml
 oxe_data_root=playground/Datasets/OXE_LEROBOT
 data_mix=bridge_rt_1
 run_root_dir=./results/Checkpoints
-run_id=1208_${data_mix}_qwen3_PI
+run_id=debug_${data_mix}_qwen3_PI
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -39,7 +39,7 @@ accelerate launch \
   --framework.qwenvl.base_vlm ${base_vlm} \
   --datasets.vla_data.data_root_dir ${oxe_data_root}\
   --datasets.vla_data.data_mix ${data_mix} \
-  --datasets.vla_data.per_device_batch_size 8 \
+  --datasets.vla_data.per_device_batch_size 16 \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps 100000 \
   --trainer.save_interval 10000 \
@@ -52,3 +52,21 @@ accelerate launch \
   # --is_debug True
 
 
+
+##### Multi-Server Multi-GPU training script #####
+  # accelerate launch \
+  #   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+  #   --main_process_ip $MASTER_ADDR \
+  #   --main_process_port $MASTER_PORT \
+  #   --machine_rank $SLURM_PROCID \
+  #   --num_machines $SLURM_NNODES \
+  #   --num_processes=${TOTAL_GPUS} \
+  #   starVLA/training/train_starvla.py \
+  #   --config_yaml ${config_yaml} \
+  #   --framework.name ${Framework_name} \
+  #   --framework.qwenvl.base_vlm ${base_vlm} \
+  #   --run_root_dir ${run_root_dir} \
+  #   --run_id ${run_id} \
+  #   --wandb_project your_project \
+  #   --wandb_entity your_name
+##### Multi-Server Multi-GPU training script #####
