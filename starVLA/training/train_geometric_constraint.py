@@ -425,7 +425,7 @@ class GeometricConstraintTrainer(TrainerUtils):
             
             # 记录评估指标
             eval_metrics = {
-                "eval_total_loss": output["total_loss"].item(),
+                "eval_total_loss": output["loss"].item(),
                 "eval_action_loss": output["action_loss"].item(),
             }
             

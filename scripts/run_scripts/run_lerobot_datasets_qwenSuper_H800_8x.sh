@@ -16,10 +16,10 @@ llavadata="asv2_conversation_en,asv2_detailed_description_en"
 oxe_data_root=/public/home/vlabadmin/dataset/OXE_LEROBOT_DATASET
 data_mix=bridge_rt_1
 
-dino_backbone=dinov2_vits14
+dino_backbone=dinov3_vits16
 
 run_root_dir=/public/home/vlabadmin/dataset/starVLA/qwen_super/Checkpoints
-run_id=1111_supervla_qwen_gr00t_dinov3
+run_id=1219_supervla_mapanything_dinov3
 
 export action_input_dim=2
 export WANDB_MODE=disabled

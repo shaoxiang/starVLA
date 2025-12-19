@@ -6,13 +6,11 @@ from typing import List, Dict, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from torchvision import transforms
 
-# --- 关键的原始库导入 ---
 try:
     from mapanything.models import MapAnything
     from uniception.models.info_sharing.base import MultiViewTransformerInput
 except ImportError:
     print("错误：请确保你已经安装了 map-anything 库。")
-    print("pip install map-anything")
     exit()
 
 def _apply_transform(view_pil_image, transform):
@@ -22,15 +20,8 @@ def _apply_transform(view_pil_image, transform):
 class MapAnythingBackbone(MapAnything):
     """
     一个 MapAnything 的“Backbone”封装器。
-
-    这个类继承自 MapAnything，但重写了 forward 方法，
-    使其在 Multi-View Transformer 之后立即返回融合后的
-    3D patch tokens 和 3D scale token。
-
-    它还包含了完整的预处理逻辑 `prepare_map_input`。
-    改进：支持自定义分辨率，默认为 518 (最佳几何性能)。
+    保留空间结构 (H, W)，便于下游进行准确的几何计算。
     """
-
     def __init__(self, image_size: Tuple[int, int] = (518, 518), *args, **kwargs):
         """
         初始化函数。
@@ -107,107 +98,75 @@ class MapAnythingBackbone(MapAnything):
                 })
 
         # --- 2. 处理可选的几何输入 (可扩展) ---
-        
-        # 辅助函数：从 (B, V, ...) 转换为 (V, B, ...)
-        def _transpose_and_inject(key_name: str, tensor_key: str):
-            if key_name in examples[0]:
+        for key in ["intrinsics", "camera_poses", "depth_along_ray"]:
+            if key in examples[0]:
                 try:
-                    # 1. 堆叠批次: (B, V, ...)
-                    batch_tensors = torch.stack([ex[key_name] for ex in examples])
-                    # 2. 交换 B 和 V 维度: (V, B, ...)
-                    v_first_tensors = batch_tensors.permute(1, 0, *range(2, batch_tensors.dim()))
-                    # 3. 注入到 map_views_list
-                    for i in range(V):
-                        map_views_list[i][tensor_key] = v_first_tensors[i].to(device)
-                except Exception as e:
-                    print(f"警告: 未能处理可选输入 '{key_name}'. 错误: {e}")
-
-        # 辅助函数：处理 B-dim 的 bool/tensor
-        def _inject_per_batch(key_name: str, tensor_key: str):
-             if key_name in examples[0]:
-                try:
-                    # 1. 收集批次: (B,)
-                    batch_data = [ex[key_name] for ex in examples]
-                    if isinstance(batch_data[0], bool):
-                         batch_tensor = torch.tensor(batch_data, dtype=torch.bool, device=device)
-                    else:
-                         batch_tensor = torch.stack(batch_data).to(device)
-                    
-                    # 2. 注入到 *每个* 视图 (MapAnything 期望 B-dim 的信息在每个视图中都存在)
-                    for i in range(V):
-                        map_views_list[i][tensor_key] = batch_tensor
-                except Exception as e:
-                    print(f"警告: 未能处理可选输入 '{key_name}'. 错误: {e}")
-
+                    batch_tensors = torch.stack([ex[key] for ex in examples])
+                    # (B, V, ...) -> (V, B, ...)
+                    v_first = batch_tensors.permute(1, 0, *range(2, batch_tensors.dim()))
+                    for i in range(V): map_views_list[i][key] = v_first[i].to(device)
+                except: pass
         
-        # MapAnything.infer 接受 'intrinsics'
-        #
-        _transpose_and_inject("intrinsics", "intrinsics")
-        
-        # MapAnything.infer 接受 'camera_poses'
-        #
-        _transpose_and_inject("camera_poses", "camera_poses")
-
-        # MapAnything.infer 接受 'depth_z' (来自 'depth_along_ray')
-        #
-        _transpose_and_inject("depth_along_ray", "depth_along_ray") 
-        
-        # MapAnything.infer 接受 'is_metric_scale'
-        #
-        _inject_per_batch("is_metric_scale", "is_metric_scale")
+        if "is_metric_scale" in examples[0]:
+            batch_data = [ex["is_metric_scale"] for ex in examples]
+            batch_tensor = torch.tensor(batch_data, dtype=torch.bool, device=device)
+            for i in range(V): map_views_list[i]["is_metric_scale"] = batch_tensor
 
         return map_views_list
 
 
     def forward(self, views: List[Dict[str, Any]], 
-                memory_efficient_inference: bool = False) -> (torch.Tensor, torch.Tensor):
+                memory_efficient_inference: bool = False) -> Dict[str, torch.Tensor]:
         """
-        重写的 Forward 传播。
+        Returns:
+            dict: {
+                'patch_features': [B, V, H_p, W_p, C], 
+                'scale_token': [B, 1, C]
+            }
         """
         
         # --- 这部分代码 1:1 复制自 MapAnything.forward ---
         batch_size_per_view, _, height, width = views[0]["img"].shape
-        num_views = len(views)
+        # num_views = len(views)
+
+        # 1. Encode
         all_encoder_features_across_views = self._encode_n_views(views)
         
-        # with torch.autocast("cuda", enabled=False):
-
+        # 2. Fuse Geometry (Optional)
         all_encoder_features_across_views = (
             self._encode_and_fuse_optional_geometric_inputs(
                 views, all_encoder_features_across_views
             )
         )
         
+        # 3. Info Sharing (Transformer)
         input_scale_token = (
-            self.scale_token.unsqueeze(0)
-            .unsqueeze(-1)
+            self.scale_token.unsqueeze(0).unsqueeze(-1)
             .repeat(batch_size_per_view, 1, 1)
         )
+
         info_sharing_input = MultiViewTransformerInput(
             features=all_encoder_features_across_views,
             additional_input_tokens=input_scale_token,
         )
-        if self.info_sharing_return_type == "no_intermediate_features":
-            final_info_sharing_multi_view_feat = self.info_sharing(info_sharing_input)
-        elif self.info_sharing_return_type == "intermediate_features":
-            (
-                final_info_sharing_multi_view_feat,
-                intermediate_info_sharing_multi_view_feat,
-            ) = self.info_sharing(info_sharing_input)
+
+        if self.info_sharing_return_type == "intermediate_features":
+            final_feat, _ = self.info_sharing(info_sharing_input)
         else:
-            raise ValueError(f"Invalid info_sharing_return_type: {self.info_sharing_return_type}")
+            final_feat = self.info_sharing(info_sharing_input)
+
         # --- 原始 forward 到此结束，开始我们自己的提取 ---
-        scale_token_output = final_info_sharing_multi_view_feat.additional_token_features.permute(0, 2, 1)
-        patch_tokens_list = final_info_sharing_multi_view_feat.features
-        flattened_patch_tokens = []
-        for view_tokens in patch_tokens_list:
-            B, C, H_p, W_p = view_tokens.shape
-            view_tokens_flat = view_tokens.flatten(2)
-            view_tokens_flat_permuted = view_tokens_flat.permute(0, 2, 1)
-            flattened_patch_tokens.append(view_tokens_flat_permuted)
-        all_patch_tokens = torch.cat(flattened_patch_tokens, dim=1)
+        # --- 保留 (H, W) 结构 ---
+        scale_token_output = final_feat.additional_token_features.permute(0, 2, 1) # [B, 1, C]
         
-        return all_patch_tokens, scale_token_output
+        # patch_tokens_list 是一个 list，长度为 V，每个元素是 [B, C, H, W]
+        # 我们将其堆叠
+        stacked_patches = torch.stack(final_feat.features, dim=1) # [B, V, C, H, W]
+
+        return {
+            "spatial_features": stacked_patches,
+            "metric_scale": scale_token_output
+        }
     
 
 if __name__ == "__main__":
@@ -262,8 +221,11 @@ if __name__ == "__main__":
         assert views_list[0]['intrinsics'].shape[0] == B
         
         with torch.no_grad():
-            patch_tokens, scale_token = model(views_list)
-        
+            map_output = model(views_list)
+
+        patch_tokens = map_output["spatial_features"] # [B, V, C, H, W]
+        scale_token = map_output["metric_scale"]      # [B, 1, C]
+
         print("\n--- 🚀 Success! ---")
         print(f"3D Patch Tokens Shape: {patch_tokens.shape}")
         print(f"3D Scale Token Shape: {scale_token.shape}")

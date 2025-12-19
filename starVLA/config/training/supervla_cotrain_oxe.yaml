@@ -15,7 +15,6 @@ framework:
   dino:
     dino_backbone: dinov2_vits14
   map_anything:
-    # 如果你想用 Apache 2.0 许可的模型，就用 "facebook/map-anything-apache"
     model_repo_id: "facebook/map-anything"
 
   action_model:

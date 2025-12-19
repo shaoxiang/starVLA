@@ -125,6 +125,8 @@ class _QWen3_VL_Interface(nn.Module):
             else:
                 prompt = instruction
 
+            print("prompt:", prompt)
+
             content.append({"type": "text", "text": prompt})
             msg = [{"role": "user", "content": content}]
 
