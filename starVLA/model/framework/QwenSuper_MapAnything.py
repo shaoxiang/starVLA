@@ -131,13 +131,15 @@ class StateAwareGeometricAdapter(nn.Module):
                 robot_state: torch.Tensor     # [B, 7]
                 ) -> torch.Tensor:
         
+        # print("StateAwareGeometricAdapter: map_features.shape:", map_features.shape)
         B, C, H, W = map_features.shape
         
         # A. 编码 State 和 Scale
         # robot_state: [B, 7] -> [B, D]
         state_emb = self.state_mlp(robot_state)
         # metric_scale: [B, 1, C] -> [B, C] -> [B, D]
-        scale_emb = self.scale_mlp(metric_scale.squeeze(1))
+        # scale_emb = self.scale_mlp(metric_scale.squeeze(1))
+        scale_emb = self.scale_mlp(metric_scale.reshape(B, -1)) # [B, 1, C] -> [B, C] -> [B, D]
         
         # 融合物理上下文: "我现在的状态 + 环境的尺度"
         physical_context = state_emb + scale_emb # [B, D]
@@ -226,42 +228,61 @@ class QwenSuperMapAnything(baseframework):
         batch_images, wrist_views, instructions, state = self.align_model_input(examples)
      
         # 2. VLM & DINO Inference (Semantic & Texture)
-        # last_hidden: [B, L_qwen + L_dino, H]
+        # last_hidden: [B, L_qwen + L_dino, H] (dtype=BF16 from autocast)
+        # state: [B, 1, 7] (dtype=BF16)
         last_hidden, state = self.get_action_condition(batch_images, instructions, wrist_views, state)
         
         # 3. MapAnything Inference (Metric Geometry)
-        # 我们这里不使用 no_grad，如果显存允许，微调 MapAnything 的 Adapter 层是最好的
-        # 如果显存不够，加上 with torch.no_grad():
-        # with torch.autocast("cuda", dtype=torch.bfloat16):
-        # with torch.no_grad():
+        # MapAnything 通常运行在 FP32 (或者它自己内部的混合精度)，且在 prepare 时转为了 device
         map_input = self.map_encoder.prepare_map_input(examples)
         map_output = self.map_encoder(map_input)
 
-        spatial_feats = map_output["spatial_features"] # [B, V, C, H, W]
-        metric_scale = map_output["metric_scale"]      # [B, 1, C]
+        spatial_feats = map_output["spatial_features"] # [B, V, C, H, W] (FP32)
+        metric_scale = map_output["metric_scale"]      # [B, 1, C] (FP32)
+
+        # print("spatial_feats.shape:", spatial_feats.shape)
+        # print("metric_scale.shape:", metric_scale.shape)
 
         # 4. Feature Fusion (The Elegant Part)
-        # A. 处理空间特征
-        # 只取主视角或者对所有视角做处理
-        # 假设 V=0 是主操作视角
-        # main_view_feat = spatial_feats[:, 0, :, :, :] # [B, C, H, W]
+        # A. 处理空间特征 - 假设 V=0 是主操作视角
+        main_view_feat = spatial_feats[:, 0] # [B, C, H, W]
+
+        # B. 准备 State (关键修复：转换 dtype 以匹配 Adapter)
+        target_dtype = self.geo_adapter.state_mlp[0].weight.dtype # 获取 Adapter 的权重类型(通常是FP32)
+        
+        if state is None:
+            state_for_adapter = torch.zeros((len(examples), 7), device=last_hidden.device, dtype=target_dtype)
+        else:
+            # 这里的 state 是 BF16，需要转回 FP32 喂给 Adapter
+            state_for_adapter = state.squeeze(1) if state.dim() == 3 else state
+            state_for_adapter = state_for_adapter.to(dtype=target_dtype)
 
         # 让 Robot State 告诉网络应该关注 Feature Map 的哪一部分
         geo_tokens, debug_attn = self.geo_adapter(
-            spatial_feats, 
+            main_view_feat, 
             metric_scale, 
-            state # 传入 [B, 7] 状态
+            state_for_adapter 
         )
         
-        # B. 拼接 Condition
-        # DiT 将同时看到：指令语义 + DINO纹理 + MapAnything几何
+        # C. 拼接 Condition
+        # geo_tokens 是 FP32, last_hidden 是 BF16
+        # 我们需要决定在哪个精度下拼接。通常 Action Model 输入如果是 BF16，则转 geo_tokens
+        geo_tokens = geo_tokens.to(dtype=last_hidden.dtype) # 转为 BF16 拼接
+        
         # [B, L_total, H]
         fused_condition = torch.cat([last_hidden, geo_tokens], dim=1)
         
-        # C. 应用 Metric Scale Modulation
-        # 这一步非常关键：它把物理尺度注入到语义特征中
-        # 让语义特征知道 "这个像素的跨度是 1cm 还是 1m"
-        fused_condition = self.scale_modulator(fused_condition, metric_scale)
+        # D. 应用 Metric Scale Modulation
+        # Scale Modulator 的输入也需要类型对齐
+        # metric_scale 是 FP32，modulator 权重是 FP32，输入 x 是 BF16
+        # 为了稳定，我们在 modulator 内部处理，或者先把 modulator 转为 BF16
+        # 这里最稳妥的是把 metric_scale 转为 BF16 (匹配 x)，并确保 modulator 能够处理混合精度
+        # 或者在调用前把 metric_scale 转为 modulator 权重的类型
+        metric_scale_for_mod = metric_scale.to(dtype=self.scale_modulator.scale_mlp[0].weight.dtype)
+        
+        # 如果 modulator 是 FP32，输入 x (BF16) 会自动强转 FP32 计算，然后输出 FP32
+        # 我们最后再转回 BF16
+        fused_condition = self.scale_modulator(fused_condition.float(), metric_scale_for_mod).to(dtype=last_hidden.dtype)
 
         # 5. Action Prediction Loop
         # --- 2. 动作预测 (Action Prediction) ---
@@ -279,9 +300,8 @@ class QwenSuperMapAnything(baseframework):
             )
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             fused_condition_repeated = fused_condition.repeat(repeated_diffusion_steps, 1, 1)
-            state_repeated = None
-            if state is not None:
-                state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
+            state_repeated = state.repeat(repeated_diffusion_steps, 1, 1) if state is not None else None
+            
             action_loss = self.action_model(fused_condition_repeated, actions_target_repeated, state_repeated)  # (B, chunk_len, action_dim)
 
         return {
@@ -301,22 +321,34 @@ class QwenSuperMapAnything(baseframework):
         """
         batch_images, wrist_views, instructions, state = self.align_model_input(examples)
         # 1. Condition Generation
+        # last_hidden (BF16), state (BF16)
         last_hidden, state = self.get_action_condition(batch_images, instructions, wrist_views, state)
         
         map_input = self.map_encoder.prepare_map_input(examples)
         map_output = self.map_encoder(map_input)
 
-        geo_tokens, debug_attn = self.geo_adapter(
-            map_output["spatial_features"][:, 0],
-            map_output["metric_scale"],
-            state # 传入 [B, 7] 状态
-        )
+        metric_scale = map_output["metric_scale"] # FP32
+        
+        # 修复: dtype 转换
+        target_dtype = self.geo_adapter.state_mlp[0].weight.dtype
+        if state is not None:
+            state_for_adapter = state.squeeze(1) if state.dim() == 3 else state
+            state_for_adapter = state_for_adapter.to(dtype=target_dtype)
+        else:
+            state_for_adapter = torch.zeros((len(examples), 7), device=last_hidden.device, dtype=target_dtype)
 
-        metric_scale = map_output["metric_scale"]
+        geo_tokens, _ = self.geo_adapter(
+            map_output["spatial_features"][:, 0],
+            metric_scale,
+            state_for_adapter
+        )
+        geo_tokens = geo_tokens.to(dtype=last_hidden.dtype)
 
         # 2. Fusion & Modulation
         fused_condition = torch.cat([last_hidden, geo_tokens], dim=1)
-        fused_condition = self.scale_modulator(fused_condition, metric_scale)
+        
+        metric_scale_for_mod = metric_scale.to(dtype=self.scale_modulator.scale_mlp[0].weight.dtype)
+        fused_condition = self.scale_modulator(fused_condition.float(), metric_scale_for_mod).to(dtype=last_hidden.dtype)
         
         # 3. Action Generation
         with torch.autocast("cuda", dtype=torch.float32):
@@ -382,7 +414,8 @@ if __name__ == "__main__":
     args, clipargs = parser.parse_known_args()
     
     cfg = OmegaConf.load(args.config_yaml)
-    cfg.framework.qwenvl.base_vlm = "/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct"
+    # cfg.framework.qwenvl.base_vlm = "/public/home/vlabadmin/dataset/Qwen3-VL-4B-Instruct"
+    cfg.framework.qwenvl.base_vlm = "/data/models/Qwen3-VL-4B-Instruct"
     
     model = QwenSuperMapAnything(cfg)
     print(model)
@@ -415,41 +448,3 @@ if __name__ == "__main__":
     print("Predict Output Keys:", predict_output.keys(), predict_output)
     normalized_actions = predict_output['normalized_actions']
     print(f"Unnormalized Action: {normalized_actions}")
-
-    # # Advance: try forward model with dataloader
-    # # can be fake sample， but here get from dataloader for simpler
-    from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
-
-    vla_dataset_cfg = cfg.datasets.vla_data
-    # vla_dataset_cfg.include_state = True
-    # vla_dataset_cfg.data_mix = "BEHAVIOR_challenge"
-    # vla_dataset_cfg.data_mix = "BEHAVIOR_rgp_dual_history"
-    vla_dataset_cfg.task_id = 5
-    vla_dataset_cfg.video_backend = "torchvision_av"
-    dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
-
-    from torch.utils.data import DataLoader
-
-    train_dataloader = DataLoader(
-        dataset,
-        batch_size=2,
-        num_workers=1,  # For Debug
-        collate_fn=collate_fn,
-    )
-    
-    from tqdm import tqdm
-    count = 0
-    for batch in tqdm(train_dataloader, desc="Processing Batches"):
-        batch
-        count += 1
-        if count > 1:
-            break
-
-    # try get model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    forward_output = model(batch)
-    print("Forward Output Keys:", forward_output.keys(), forward_output)
-    pred = model.predict_action(examples=[sample]) #, state=[batch[0]["state"]]
-    print("Predict Output Keys:", pred.keys(), pred)
-    print(f"✓ 推理成功: actions_shape={pred['normalized_actions'].shape}")
