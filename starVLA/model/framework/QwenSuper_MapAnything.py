@@ -325,7 +325,8 @@ class QwenSuperMapAnything(baseframework):
         last_hidden, state = self.get_action_condition(batch_images, instructions, wrist_views, state)
         
         map_input = self.map_encoder.prepare_map_input(examples)
-        map_output = self.map_encoder(map_input)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            map_output = self.map_encoder(map_input)
 
         metric_scale = map_output["metric_scale"] # FP32
         
@@ -338,8 +339,8 @@ class QwenSuperMapAnything(baseframework):
             state_for_adapter = torch.zeros((len(examples), 7), device=last_hidden.device, dtype=target_dtype)
 
         geo_tokens, _ = self.geo_adapter(
-            map_output["spatial_features"][:, 0],
-            metric_scale,
+            map_output["spatial_features"][:, 0].to(dtype=target_dtype),
+            metric_scale.to(dtype=target_dtype),
             state_for_adapter
         )
         geo_tokens = geo_tokens.to(dtype=last_hidden.dtype)
@@ -389,7 +390,7 @@ class QwenSuperMapAnything(baseframework):
 
             # Step 2: DINO Forward
             if wrist_views == None:
-                wrist_views = batch_images
+               wrist_views = batch_images
             image_tensors = self.dino_encoder.prepare_dino_input(wrist_views)  #
             B = len(batch_images)
             dino_features = self.dino_encoder(image_tensors)  # DINO output is [B*num_view, token, dim]

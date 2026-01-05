@@ -1,14 +1,15 @@
-
-
-cd /mnt/petrelfs/yejinhui/Projects/starVLA
-export PYTHONPATH=$(pwd):${PYTHONPATH}
-
+cd .
 port=6678
 gpu_id=2
 # export DEBUG=true
-export star_vla_python=/mnt/petrelfs/share/yejinhui/Envs/miniconda3/envs/starVLA/bin/python
+export star_vla_python=/data/conda/starVLA/bin/python
+export PYTHONPATH=$(pwd):${PYTHONPATH}
 
-your_ckpt=./results/Checkpoints/1208_bridge_rt_1_Qwen3PI/final_model/pytorch_model.pt
+MODEL_PATH=$1
+if [ -z "$MODEL_PATH" ]; then
+  echo "❌ MODEL_PATH not provided as the first argument, using default value"
+fi
+your_ckpt=${MODEL_PATH}
 
 #### build output directory #####
 ckpt_dir=$(dirname "${your_ckpt}")

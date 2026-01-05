@@ -63,7 +63,6 @@ def get_vla_dataset(
     balance_dataset_weights: bool = False,
     balance_trajectory_weights: bool = False,
     seed: int = 42,
-    delete_pause_frame: bool = True,
     **kwargs: dict,
 ) -> LeRobotMixtureDataset:
     """
@@ -71,6 +70,7 @@ def get_vla_dataset(
     """
     data_root_dir = data_cfg.data_root_dir
     data_mix = data_cfg.data_mix
+    delete_pause_frame = data_cfg.get("delete_pause_frame", False)
     mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
     included_datasets, filtered_mixture_spec = set(), []
     for d_name, d_weight, robot_type in mixture_spec:  
@@ -147,25 +147,16 @@ if __name__ == "__main__":
     parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_behavior.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
 
-    # debugpy.listen(("0.0.0.0", 10092))
-    # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    # debugpy.wait_for_client()
-
-    # args.config_yaml = "examples/SimplerEnv/train_files/starvla_cotrain_libero.yaml"
-    args.config_yaml = "examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml"
+    debugpy.listen(("0.0.0.0", 10092))
+    print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+    debugpy.wait_for_client()
+    args.config_yaml = "examples/Robotwin/train_files/starvla_cotrain_robotwin.yaml"
     cfg = OmegaConf.load(args.config_yaml)
-
+    cfg.datasets.vla_data.data_mix = "robotwin"
     vla_dataset_cfg = cfg.datasets.vla_data
-    # vla_dataset_cfg.data_root_dir = "./playground/Datasets/behavior-1k"
-    # vla_dataset_cfg.include_state = True
-    # vla_dataset_cfg.data_mix = "BEHAVIOR_dual_base_depth"
+    cfg.datasets.vla_data.include_state = True
     vla_dataset_cfg.task_id = 1
-    # for task_id in ["all"]:
-    for task_id in [5,11,13,26,36,27,43,44,45,46]:
-        # 11,26,36,37
-        # 5,11,13,26,36,27,43,44,45,46
-        # 2,3,5,11,13,25,26,27,
-        # 3,5,11,13, / 14,15,16,17, / 19,20,23,25, / 26,27,30,34, / 36,37,38,39, 41,42,43,44,45,46,47,49
+    for task_id in ["all"]:
         vla_dataset_cfg.task_id = task_id
         print(f"Testing Task ID: {task_id}")
         dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
@@ -178,8 +169,12 @@ if __name__ == "__main__":
         collate_fn=collate_fn,
     )
 
+    cfg.output_dir = "./results/debug"
+    output_dir = Path(cfg.output_dir)
+    dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
+
     from tqdm import tqdm
-    count = 1
+    count = 10
     for batch in tqdm(train_dataloader, desc="Processing Batches"):
         print(batch)
         print(f"\n=== Batch {count} ===")

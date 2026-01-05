@@ -3,7 +3,8 @@
 # conda activate simpler_env
 echo `which python`
 
-export sim_python=/data/conda/starVLA/bin/python:${PYTHONPATH}
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export sim_python=/data/conda/simpler_env/bin/python
 export SimplerEnv_PATH=/code/robot/benchmark/SimplerEnv
 export PYTHONPATH=$(pwd):${PYTHONPATH}
 #### set environment variables #####
@@ -48,9 +49,9 @@ robot_init_x=0.147
 robot_init_y=0.028
 
 declare -a ENV_NAMES=(
-  # StackGreenCubeOnYellowCubeBakedTexInScene-v0
-  # PutCarrotOnPlateInScene-v0
-  # PutSpoonOnTableClothInScene-v0
+  StackGreenCubeOnYellowCubeBakedTexInScene-v0
+  PutCarrotOnPlateInScene-v0
+  PutSpoonOnTableClothInScene-v0
 )
 
 for i in "${!ENV_NAMES[@]}"; do

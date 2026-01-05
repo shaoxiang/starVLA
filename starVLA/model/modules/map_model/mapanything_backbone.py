@@ -104,12 +104,12 @@ class MapAnythingBackbone(MapAnything):
         
         # --- 2. Fuse Geometry (必须只传 features list) ---
         # model.py 建议在 fusion 时关闭 autocast 以避免 NaN
-        with torch.autocast("cuda", enabled=False):
-            all_encoder_features_across_views = (
-                self._encode_and_fuse_optional_geometric_inputs(
-                    views, all_encoder_features_across_views
-                )
+        # with torch.autocast("cuda", enabled=False):
+        all_encoder_features_across_views = (
+            self._encode_and_fuse_optional_geometric_inputs(
+                views, all_encoder_features_across_views
             )
+        )
         
         # --- 3. Info Sharing (Transformer Input 构造方式变了) ---
         # 必须传入 scale token
