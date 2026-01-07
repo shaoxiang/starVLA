@@ -5,6 +5,8 @@ import torch.nn as nn
 from typing import List, Dict, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from torchvision import transforms
+from PIL import Image
+import numpy as np
 
 try:
     from mapanything.models import MapAnything
@@ -14,6 +16,11 @@ except ImportError:
     exit()
 
 def _apply_transform(view_pil_image, transform):
+    # 如果是 numpy 数组，先转换为 PIL Image
+    if isinstance(view_pil_image, np.ndarray):
+        # 注意：如果 OpenCV 读取的是 BGR，需要转 RGB
+        # 如果确定输入已经是 RGB 格式：
+        view_pil_image = Image.fromarray(view_pil_image)
     return transform(view_pil_image)
 
 class MapAnythingBackbone(MapAnything):
