@@ -3,8 +3,8 @@ import os
 # from IPython import embed; embed()
 from examples.SimplerEnv.eval_files.custom_argparse import get_args
 from examples.SimplerEnv.eval_files.model2simpler_interface import ModelClient
-from simpler_env.evaluation.maniskill2_evaluator import maniskill2_evaluator
-
+from examples.SimplerEnv.eval_files.maniskill2_evaluator import maniskill2_evaluator
+# from simpler_env.evaluation.maniskill2_evaluator import maniskill2_evaluator
 import numpy as np
 
 

@@ -15,6 +15,7 @@ from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
 from starVLA.model.tools import read_mode_config
 
 
+
 class ModelClient:
     def __init__(
         self,
@@ -107,20 +108,19 @@ class ModelClient:
         self.previous_gripper_action = None
 
     def step(
-        self, 
-        image: np.ndarray, 
-        task_description: Optional[str] = None, 
-        robot_state: Optional[np.ndarray] = None,
-        *args, **kwargs
+        self, image: np.ndarray, task_description: Optional[str] = None, *args, **kwargs
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         """
         Input:
             image: np.ndarray of shape (H, W, 3), uint8
             task_description: Optional[str], task description; if different from previous task description, policy state is reset
-            robot_state: Optional[np.ndarray] of shape (7,), [x,y,z, r,p,y, gripper]
         Output:
             raw_action: dict; raw policy action output
-            action: dict; processed action to be sent to the maniskill2 environment
+            action: dict; processed action to be sent to the maniskill2 environment, with the following keys:
+                - 'world_vector': np.ndarray of shape (3,), xyz translation of robot end-effector
+                - 'rot_axangle': np.ndarray of shape (3,), axis-angle representation of end-effector rotation
+                - 'gripper': np.ndarray of shape (1,), gripper action
+                - 'terminate_episode': np.ndarray of shape (1,), 1 if episode should be terminated, 0 otherwise
         """
         if task_description is not None:
             if task_description != self.task_description:
@@ -128,32 +128,37 @@ class ModelClient:
 
         assert image.dtype == np.uint8
         self._add_image_to_history(self._resize_image(image))
-        
+        # image: Image.Image = Image.fromarray(image)
+
         image = self._resize_image(image)
-        
-        # Build the example input for the model
         example = {
             "image": [image],
             "lang": self.task_description,
         }
         
-        # Add robot state if provided (Critical update for state-based policies)
-        if robot_state is not None:
-            example["state"] = robot_state
+        vla_input = {
+            "examples": [example],
+            "do_sample": False,
+            "cfg_scale": self.cfg_scale,
+            "use_ddim": self.use_ddim,
+            "num_ddim_steps": self.num_ddim_steps,
+        }
 
         vla_input = {
             "examples": [example],
             "do_sample": False,
             "use_ddim": self.use_ddim,
             "num_ddim_steps": self.num_ddim_steps,
-            "cfg_scale": self.cfg_scale
         }
+        
    
         response = self.client.predict_action(vla_input)
+        
         
         # unnormalize the action
         normalized_actions = response["data"]["normalized_actions"] # B, chunk, D        
         normalized_actions = normalized_actions[0]
+        
         
         raw_actions = self.unnormalize_actions(normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats)
         
@@ -184,6 +189,8 @@ class ModelClient:
                 self.previous_gripper_action = current_gripper_action
             else:
                 relative_gripper_action = self.previous_gripper_action - current_gripper_action
+            # fix a bug in the SIMPLER code here
+            # self.previous_gripper_action = current_gripper_action
 
             if np.abs(relative_gripper_action) > 0.5 and (not self.sticky_action_is_on):
                 self.sticky_action_is_on = True
@@ -229,8 +236,10 @@ class ModelClient:
         policy_ckpt_path = Path(policy_ckpt_path)
         model_config, norm_stats = read_mode_config(policy_ckpt_path)  # read config and norm_stats
 
-        # unnorm_key = baseframework._check_unnorm_key(norm_stats, unnorm_key) 
+        # unnorm_key = baseframework._check_unnorm_key(norm_stats, unnorm_key) # 其实也是很环境 specific 的
         return norm_stats[unnorm_key]["action"]
+
+
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
         image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)

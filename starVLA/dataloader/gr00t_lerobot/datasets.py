@@ -763,15 +763,15 @@ class LeRobotSingleDataset(Dataset):
         """
         trajectory_id, base_index = self.all_steps[index]
         data = self.get_step_data(trajectory_id, base_index)
+        # Apply transforms
+        data = self.transforms(data)
         
         # Process all video keys dynamically
         images = []
         for video_key in self.modality_keys["video"]:
             image = data[video_key][0]
-            
             # Apply image cropping if enabled and the video key is base_view
             # Note: crop_obs_camera functionality has been removed
-            
             image = Image.fromarray(image).resize((224, 224))
             images.append(image)
         
@@ -782,10 +782,27 @@ class LeRobotSingleDataset(Dataset):
             action.append(data[action_key])
         action = np.concatenate(action, axis=1)
         
-        return dict(action=action, image=images, language=language)
+        result = dict(action=action, image=images, language=language)
+        
+        # Get state if configured
+        if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
+            state_parts = []
+            # Only include state keys that actually exist in data (some may be removed/converted)
+            for state_key in self.modality_keys["state"]:
+                if state_key in data:
+                    state_parts.append(data[state_key])
+            
+            if state_parts:
+                state = np.concatenate(state_parts, axis=1).astype(np.float16)
+                result["state"] = state
+        
+        return result
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
+        
+        For oxe_rt1 dataset: Convert quaternion to Euler angles and align with oxe_bridge format.
+        For oxe_bridge dataset: Remove state.pad to align with oxe_rt1.
 
         Args:
             trajectory_id (int): The name of the trajectory.
@@ -820,6 +837,82 @@ class LeRobotSingleDataset(Dataset):
             for key in self.modality_keys[modality]:
                 # print(f"LeRobotSingleDataset Getting data for key: {key}")
                 data[key] = self.get_data_by_modality(trajectory_id, modality, key, base_index)
+        
+        # Unified state processing: convert quaternion to Euler angles for oxe_rt1
+        if self.tag == "oxe_rt1":
+            data = self._convert_quaternion_to_euler(data)
+        elif self.tag == "oxe_bridge":
+            data = self._remove_pad_state(data)
+        
+        return data
+
+    def _convert_quaternion_to_euler(self, data: dict) -> dict:
+        """Convert quaternion state (rx, ry, rz, rw) to Euler angles (roll, pitch, yaw).
+        
+        Only processes if all quaternion components are present.
+        Returns data with quaternion components replaced by Euler angles.
+        """
+        # Check if quaternion components exist
+        quat_keys = ["state.rx", "state.ry", "state.rz", "state.rw"]
+        if not all(key in data for key in quat_keys):
+            return data
+        
+        # Extract quaternion data: shape (T, 1) for each component
+        rx = data["state.rx"].squeeze(-1)  # (T,)
+        ry = data["state.ry"].squeeze(-1)  # (T,)
+        rz = data["state.rz"].squeeze(-1)  # (T,)
+        rw = data["state.rw"].squeeze(-1)  # (T,)
+        
+        # Convert each frame's quaternion to Euler angles
+        roll_list = []
+        pitch_list = []
+        yaw_list = []
+        
+        for i in range(len(rx)):
+            roll, pitch, yaw = self._quat_to_euler_single(rx[i], ry[i], rz[i], rw[i])
+            roll_list.append(roll)
+            pitch_list.append(pitch)
+            yaw_list.append(yaw)
+        
+        # Convert to arrays and reshape to (T, 1)
+        roll_array = np.array(roll_list).reshape(-1, 1).astype(np.float32)
+        pitch_array = np.array(pitch_list).reshape(-1, 1).astype(np.float32)
+        yaw_array = np.array(yaw_list).reshape(-1, 1).astype(np.float32)
+        
+        # Update data dictionary
+        data["state.roll"] = roll_array
+        data["state.pitch"] = pitch_array
+        data["state.yaw"] = yaw_array
+        
+        # Remove quaternion keys
+        for key in quat_keys:
+            del data[key]
+        
+        return data
+
+    def _quat_to_euler_single(self, x: float, y: float, z: float, w: float) -> tuple[float, float, float]:
+        """Convert a single quaternion (x, y, z, w) to Euler angles (roll, pitch, yaw)."""
+        # Roll (rotation around x-axis)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+        
+        # Pitch (rotation around y-axis)
+        sinp = 2 * (w * y - z * x)
+        sinp = np.clip(sinp, -1.0, 1.0)  # Clamp to avoid numerical errors in arcsin
+        pitch = np.arcsin(sinp)
+        
+        # Yaw (rotation around z-axis)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
+        
+        return float(roll), float(pitch), float(yaw)
+
+    def _remove_pad_state(self, data: dict) -> dict:
+        """Remove state.pad from oxe_bridge data for alignment with oxe_rt1."""
+        if "state.pad" in data:
+            del data["state.pad"]
         return data
 
     def get_trajectory_data(self, trajectory_id: int) -> pd.DataFrame:
@@ -1634,38 +1727,6 @@ class LeRobotMixtureDataset(Dataset):
         trajectory_id, base_index = dataset.all_steps[single_step_index]
         return dataset, trajectory_id, base_index
 
-    def xyzw_to_rpy(self, xyzw_dict: Dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        将四元数 (x, y, z, w) 转换为欧拉角 (roll, pitch, yaw)
-        
-        Args:
-            xyzw_dict: 包含四元数分量的字典，键为 'rx', 'ry', 'rz', 'rw'
-            
-        Returns:
-            tuple: (roll, pitch, yaw) 分别表示绕 x, y, z 轴的旋转角度（弧度）
-        """
-        # 提取四元数分量
-        x = xyzw_dict['state.rx']  # 对应四元数的 x 分量
-        y = xyzw_dict['state.ry']  # 对应四元数的 y 分量
-        z = xyzw_dict['state.rz']  # 对应四元数的 z 分量
-        w = xyzw_dict['state.rw']  # 对应四元数的 w 分量
-        
-        # 计算旋转矩阵元素
-        # 根据四元数到旋转矩阵的转换公式
-        t0 = 2.0 * (w * x + y * z)
-        t1 = 1.0 - 2.0 * (x * x + y * y)
-        roll_x = np.arctan2(t0, t1)
-        
-        t2 = 2.0 * (w * y - z * x)
-        t2 = np.clip(t2, -1.0, 1.0)  # 确保值在 [-1, 1] 范围内，避免 arcsin 异常
-        pitch_y = np.arcsin(t2)
-        
-        t3 = 2.0 * (w * z + x * y)
-        t4 = 1.0 - 2.0 * (y * y + z * z)
-        yaw_z = np.arctan2(t3, t4)
-        
-        return roll_x, pitch_y, yaw_z
-
     def __getitem__(self, index: int) -> dict:
         """Get the data for a single trajectory and start index.
 
@@ -1680,25 +1741,24 @@ class LeRobotMixtureDataset(Dataset):
         
         for attempt in range(max_retries):
             try:
-                while True: # @DUG
+                while True:  # @DUG - ensure video exists
                     dataset, trajectory_name, step = self.sample_step(index)
                     key = dataset.modality_keys["video"][0].replace("video.", "")
                     video_path = dataset.get_video_path(trajectory_name, key)
                     if os.path.exists(video_path):
                         break
                     index = random.randint(0, len(self) - 1)
-                    
-                    
-                data = dataset.transforms(dataset.get_step_data(trajectory_name, step))
+                
+                # Get step data and apply transforms
+                # State conversion (quat->euler) and pad removal already handled in get_step_data()
+                data = dataset.get_step_data(trajectory_name, step)
+                data = dataset.transforms(data)
                 
                 # Process all video keys dynamically
                 prim_images = []
                 wrist_views = []
                 for video_key in dataset.modality_keys["video"]:
                     image = data[video_key][0]
-                    
-                    # Apply image cropping if enabled and the video key is base_view
-                    # Note: crop_obs_camera functionality has been removed
                     image = Image.fromarray(image).resize((224, 224))
                     if "wrist" not in video_key:
                         prim_images.append(image)
@@ -1706,42 +1766,32 @@ class LeRobotMixtureDataset(Dataset):
                         wrist_views.append(image)
                 all_images = prim_images + wrist_views
                 
-                # 获取语言数据
+                # Get language data
                 language = data[dataset.modality_keys["language"][0]][0]
+                
+                # Get action data
                 action = []
                 for action_key in dataset.modality_keys["action"]:
                     action.append(data[action_key])
                 action = np.concatenate(action, axis=1).astype(np.float16)
                 
-                state = None
+                # Build result dictionary
+                result = dict(action=action, image=all_images, lang=language)
+                
+                # Get state if configured
                 if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
-                    # 优化状态构建
                     state_parts = []
-                    xyzw_buffer = {}
-                    
+                    # Only include state keys that actually exist in data (some may be removed/converted)
                     for state_key in dataset.modality_keys["state"]:
-                        if dataset.tag == "oxe_rt1":
-                            if state_key in ["state.rx", "state.ry", "state.rz", "state.rw"]:
-                                # 存储四元数分量
-                                xyzw_buffer[state_key] = data[state_key]
-                            elif state_key == "state.gripper":
-                                # 将四元数转换为欧拉角
-                                roll, pitch, yaw = self.xyzw_to_rpy(xyzw_buffer)
-                                state_parts.extend([roll, pitch, yaw, data[state_key]])
-                                xyzw_buffer.clear()  # 清空缓冲区
-                            else:
-                                state_parts.append(data[state_key])
-                        elif dataset.tag == "oxe_bridge":
-                            if state_key != "state.pad":
-                                state_parts.append(data[state_key])
-                        else:
+                        if state_key in data:
                             state_parts.append(data[state_key])
                     
-                    state = np.concatenate(state_parts, axis=1).astype(np.float16)
-                    return dict(action=action, image=all_images, lang=language, state=state)
-
-                return dict(action=action, image=all_images, lang=language)
-                                    
+                    if state_parts:
+                        state = np.concatenate(state_parts, axis=1).astype(np.float16)
+                        result["state"] = state
+                
+                return result
+                                        
             except Exception as e:
                 last_exception = e
                 if attempt < max_retries - 1:

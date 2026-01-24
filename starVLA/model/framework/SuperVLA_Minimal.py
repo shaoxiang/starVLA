@@ -104,7 +104,7 @@ class SuperVLA_Minimal(baseframework):
         self.config = config
         
         # 1. Perception (Frozen/Slow Systems)
-        # Qwen2-VL: 提供语义理解
+        # Qwen3-VL: 提供语义理解
         self.qwen_vl_interface = get_vlm_model(config=self.config)
         H_QWEN = self.qwen_vl_interface.model.config.hidden_size
         
@@ -239,11 +239,22 @@ class SuperVLA_Minimal(baseframework):
         with torch.autocast("cuda", dtype=torch.float32):
             state_t, _ = self.bottleneck(vlm_tokens.float(), map_tokens.float())
         
-        # 3. Blind Policy
-        robot_state_tensor = torch.from_numpy(np.array(robot_states)).to(state_t.device, dtype=torch.float32)
-        if robot_state_tensor.dim() == 2:
-            robot_state_tensor = robot_state_tensor.unsqueeze(1)
+        # 3. 处理 robot_states：如果为 None，使用零向量作为默认值
+        if robot_states is not None:
+            robot_state_tensor = torch.from_numpy(np.array(robot_states)).to(state_t.device, dtype=torch.float32)
+            if robot_state_tensor.dim() == 2:
+                robot_state_tensor = robot_state_tensor.unsqueeze(1)
+        else:
+            # 如果 robot_states 为 None，使用零向量初始化
+            # 维度：[batch_size, 1, 7] 其中 7 是 action_dim (x,y,z,r,p,y,g)
+            batch_size = len(examples)
+            robot_state_tensor = torch.zeros(
+                (batch_size, 1, 7), 
+                device=state_t.device, 
+                dtype=torch.float32
+            )
         
+        # 4. Blind Policy 执行动作预测
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(state_t, robot_state_tensor)
             
@@ -253,6 +264,7 @@ class SuperVLA_Minimal(baseframework):
     
     def align_model_input(self, examples: List[dict]):
         # 标准的数据对齐逻辑，与 QwenSuper 保持一致
+        # print(examples)
         batch_images = [to_pil_preserve(example["image"]) for example in examples]
         instructions = [example["lang"] for example in examples]
         
@@ -267,6 +279,8 @@ class SuperVLA_Minimal(baseframework):
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", [224,224])
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
+
+        # print(f"states: {states}")
             
         return batch_images, instructions, actions, states
 

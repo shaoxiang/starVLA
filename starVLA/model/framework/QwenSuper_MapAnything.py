@@ -249,6 +249,8 @@ class QwenSuperMapAnything(baseframework):
 
         # B. 准备 State (关键修复：转换 dtype 以匹配 Adapter)
         target_dtype = self.geo_adapter.state_mlp[0].weight.dtype # 获取 Adapter 的权重类型(通常是FP32)
+
+        state = None
         
         if state is None:
             state_for_adapter = torch.zeros((len(examples), 7), device=last_hidden.device, dtype=target_dtype)
@@ -320,6 +322,7 @@ class QwenSuperMapAnything(baseframework):
         模型应该因为训练时的 Scale Modulation 而自动输出符合物理尺度的动作。
         """
         batch_images, wrist_views, instructions, state = self.align_model_input(examples)
+        
         # 1. Condition Generation
         # last_hidden (BF16), state (BF16)
         last_hidden, state = self.get_action_condition(batch_images, instructions, wrist_views, state)
@@ -329,6 +332,8 @@ class QwenSuperMapAnything(baseframework):
             map_output = self.map_encoder(map_input)
 
         metric_scale = map_output["metric_scale"] # FP32
+        
+        state = None
         
         # 修复: dtype 转换
         target_dtype = self.geo_adapter.state_mlp[0].weight.dtype

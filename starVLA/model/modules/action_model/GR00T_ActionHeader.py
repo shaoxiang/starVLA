@@ -21,6 +21,9 @@ from starVLA.model.modules.action_model.flow_matching_head.action_encoder import
 
 from starVLA.model.modules.action_model.flow_matching_head.cross_attention_dit import DiT
 
+from accelerate.logging import get_logger
+logger = get_logger(__name__)
+
 # TODO try to meger DiT Modules with follow_match_head, they are just the same arch, but diff loss, use diffusers package will be simple
 
 class CategorySpecificLinear(nn.Module):
@@ -288,8 +291,9 @@ class FlowmatchingActionHead(nn.Module):
 
 
         # embed state
-        state_features = self.state_encoder(state) if state is not None else None
-
+        state_features = self.state_encoder(state) if state is not None else None        
+        if state_features is not None and state_features.dim() == 2:
+            state_features = state_features.unsqueeze(1)
 
         # Maybe add position embedding.
         if self.config.add_pos_embed:
@@ -332,6 +336,8 @@ class FlowmatchingActionHead(nn.Module):
         dt = 1.0 / num_steps
         
         state_features = self.state_encoder(state) if state is not None else None
+        if state_features is not None and state_features.dim() == 2:
+            state_features = state_features.unsqueeze(1)
 
         # Run denoising steps.
         for t in range(num_steps):
